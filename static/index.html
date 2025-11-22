@@ -1,0 +1,1920 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>灰魂的 Gemini 3 Pro 暗夜工坊 (Web版)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        :root {
+            /* 暗色深蓝/黑主题配色 */
+            --bg: #0b0e14;
+            --card-bg: #151b25;     
+            --input-bg: #1e2532;    
+            --primary: #6366f1;     
+            --primary-hover: #818cf8;
+            --text: #e2e8f0;        
+            --text-muted: #94a3b8;  
+            --border: #2d3748;      
+            --radius: 16px;
+            --shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5);
+            --code-bg: #0f1117;
+        }
+
+        body {
+            font-family: 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 40px 20px;
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        /* 滚动条美化 */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--primary); }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h2 {
+            text-align: center;
+            color: #f8fafc;
+            margin-bottom: 40px;
+            font-weight: 200;
+            font-size: 2.2rem;
+            letter-spacing: 2px;
+            text-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
+        }
+
+        /* 控制面板 */
+        .controls {
+            background: var(--card-bg);
+            padding: 30px;
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            display: grid;
+            gap: 24px;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            border: 1px solid var(--border);
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--primary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        input, select, textarea {
+            width: 100%;
+            padding: 14px 16px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-size: 0.95rem;
+            transition: all 0.3s;
+            background: var(--input-bg);
+            color: var(--text);
+            box-sizing: border-box;
+        }
+
+        input::placeholder, textarea::placeholder { color: #475569; }
+
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+            background: #242c3d;
+        }
+
+        input[type="checkbox"] {
+            width: auto;
+            transform: scale(1.5);
+            cursor: pointer;
+        }
+
+        .full-width { grid-column: 1 / -1; }
+
+        textarea {
+            min-height: 120px;
+            resize: vertical;
+            font-family: inherit;
+            line-height: 1.5;
+        }
+
+        /* 统计面板 */
+        .stats-panel {
+            background: rgba(30, 37, 50, 0.5);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 80px;
+        }
+        
+        .stat-value {
+            font-size: 1.4rem;
+            font-weight: bold;
+            color: var(--primary);
+            font-family: 'Consolas', monospace;
+        }
+        
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .stat-item.success .stat-value { color: #4ade80; }
+        .stat-item.failed .stat-value { color: #f87171; }
+        .stat-item.waiting .stat-value { color: #fbbf24; }
+        .stat-item.processing .stat-value { color: #60a5fa; }
+        .stat-item.cost .stat-value { color: #f472b6; }
+
+        /* ------------------ 咒语预设样式 ------------------ */
+        .preset-area {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 5px;
+            min-height: 0; 
+        }
+
+        .preset-tag {
+            background: rgba(99, 102, 241, 0.15);
+            border: 1px solid var(--primary);
+            color: #e0e7ff;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+        }
+
+        .preset-tag:hover {
+            background: var(--primary);
+            color: white;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+        }
+
+        .preset-name {
+            max-width: 150px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .preset-delete {
+            opacity: 0.6;
+            font-weight: bold;
+            font-size: 1rem;
+            line-height: 1;
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+        }
+
+        .preset-delete:hover {
+            opacity: 1;
+            background: rgba(255, 255, 255, 0.3);
+            color: #ffcccc;
+        }
+
+        .btn-add-preset {
+            font-size: 0.75rem;
+            padding: 4px 12px;
+            background: transparent;
+            border: 1px dashed var(--text-muted);
+            color: var(--text-muted);
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-add-preset:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: rgba(99, 102, 241, 0.05);
+        }
+        /* ------------------------------------------------------- */
+
+        /* 图片上传管理区 */
+        .upload-area {
+            border: 2px dashed var(--border);
+            padding: 20px;
+            border-radius: 10px;
+            background: rgba(30, 37, 50, 0.5);
+            transition: border-color 0.3s;
+        }
+        .upload-area:hover {
+            border-color: var(--primary);
+        }
+        
+        .upload-btn-wrapper {
+            margin-bottom: 15px;
+        }
+
+        .file-preview-area {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            min-height: 0;
+        }
+        
+        .preview-item {
+            position: relative;
+            width: 80px;
+            height: 80px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+            background: #000;
+        }
+        
+        .preview-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.8;
+            transition: opacity 0.2s;
+        }
+        
+        .preview-item:hover img { opacity: 1; }
+
+        .preview-remove {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            background: rgba(239, 68, 68, 0.9);
+            color: white;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 18px;
+            font-size: 14px;
+            cursor: pointer;
+            z-index: 10;
+            font-weight: bold;
+        }
+        .preview-remove:hover { background: #ff0000; }
+
+        /* 按钮 */
+        .btn-group {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .btn-primary, .btn-danger, .btn-secondary, .btn-upload {
+            background: linear-gradient(135deg, var(--primary), #4f46e5);
+            color: white;
+            font-weight: 600;
+            padding: 16px 30px;
+            border: none;
+            cursor: pointer;
+            border-radius: 10px;
+            font-size: 1rem;
+            letter-spacing: 0.05em;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(79, 70, 229, 0.4);
+            flex: 1;
+        }
+
+        .btn-upload {
+            background: #2d3748;
+            box-shadow: none;
+            padding: 10px 20px;
+            font-size: 0.9rem;
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-upload:hover { background: #4a5568; }
+
+        .btn-danger {
+            background: #334155;
+            box-shadow: none;
+            flex: 0 0 auto;
+            padding: 16px 20px;
+        }
+        .btn-danger:hover { background: #ef4444; }
+
+        .btn-secondary {
+            background: #2d3748;
+            box-shadow: none;
+            font-size: 0.8rem;
+            padding: 8px 16px;
+            flex: 0 0 auto;
+        }
+        .btn-secondary:hover { background: #4a5568; }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.5);
+        }
+
+        .btn-primary:disabled {
+            background: #334155;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            opacity: 0.7;
+        }
+
+        .status-text {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-top: 15px;
+            font-style: italic;
+        }
+
+        /* 画廊 */
+        .gallery-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 50px;
+            margin-bottom: 20px;
+            padding: 0 10px;
+        }
+
+        .gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 20px;
+            padding: 10px 0;
+        }
+
+        .compact-card {
+            position: relative;
+            background: var(--card-bg);
+            border-radius: var(--radius);
+            overflow: hidden;
+            border: 1px solid var(--border);
+            aspect-ratio: 3/4; /* 竖向卡片 */
+            cursor: pointer;
+            transition: transform 0.3s, box-shadow 0.3s, border-color 0.3s;
+            box-shadow: var(--shadow);
+            isolation: isolate;
+            /* 性能优化关键 */
+            content-visibility: auto; 
+            contain-intrinsic-size: 300px 400px; 
+        }
+
+        .compact-card:hover {
+            transform: translateY(-5px) scale(1.02);
+            border-color: var(--primary);
+            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.5);
+            z-index: 10;
+        }
+
+        .compact-card img.cover-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.5s;
+            will-change: transform;
+            backface-visibility: hidden; /* 优化渲染性能 */
+        }
+
+        .compact-card:hover img.cover-img {
+            transform: scale(1.1);
+        }
+
+        .compact-overlay {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(to top, rgba(11, 14, 20, 0.95) 0%, rgba(11, 14, 20, 0.5) 40%, transparent 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding: 15px;
+            opacity: 1;
+            transition: opacity 0.3s;
+        }
+
+        .compact-info {
+            color: white;
+            font-size: 0.9rem;
+            margin-bottom: 12px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        
+        .compact-meta {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .compact-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 5px;
+        }
+
+        .btn-mini {
+            flex: 1;
+            padding: 8px 0;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            border: 1px solid rgba(255,255,255,0.1);
+            cursor: pointer;
+            background: rgba(30, 41, 59, 0.95);
+            color: white;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+        }
+        .btn-mini:hover {
+            background: var(--primary);
+            border-color: var(--primary);
+        }
+        .btn-mini.danger:hover {
+            background: #ef4444;
+            border-color: #ef4444;
+        }
+
+        /* ---- Selection Mode Styles ---- */
+        .compact-card.selection-mode {
+            cursor: pointer;
+        }
+        .compact-card.selection-mode:hover {
+            transform: none; /* Disable hover effect in selection mode */
+            box-shadow: var(--shadow);
+            border-color: var(--border); /* Reset border on hover */
+        }
+        .compact-card.selected:hover {
+            border-color: var(--primary) !important;
+        }
+        .selection-checkbox-container {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            z-index: 12;
+            width: 25px;
+            height: 25px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .selection-checkbox {
+            transform: scale(1.5);
+            cursor: pointer;
+            accent-color: var(--primary);
+        }
+        .compact-card.selected {
+            outline: 3px solid var(--primary-hover);
+            outline-offset: -2px;
+        }
+
+        /* New Detail Modal */
+        .detail-modal {
+            display: none;
+            position: fixed;
+            z-index: 2200;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.98);
+            backdrop-filter: blur(10px);
+            overflow-y: auto; /* Mobile scroll */
+        }
+        
+        .detail-container {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            min-height: 100%;
+            max-width: 1600px;
+            margin: 0 auto;
+            background: #0f1117;
+            position: relative;
+        }
+
+        @media (min-width: 1024px) {
+            .detail-container {
+                flex-direction: row;
+                height: 100vh;
+                overflow: hidden;
+            }
+            .detail-left-pane {
+                width: 60%;
+                height: 100%;
+                background: #000;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                position: relative;
+                padding: 20px;
+                box-sizing: border-box;
+            }
+            .detail-right-pane {
+                width: 40%;
+                height: 100%;
+                border-left: 1px solid var(--border);
+                display: flex;
+                flex-direction: column;
+                background: var(--card-bg);
+            }
+            .detail-scroll-area {
+                flex: 1;
+                overflow-y: auto;
+                padding: 30px;
+            }
+        }
+
+        .btn-close-detail {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 2300;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-close-detail:hover {
+            background: #ef4444;
+            transform: rotate(90deg);
+        }
+
+        /* Config Toolbar */
+        .config-toolbar {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .btn-icon {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            padding: 5px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.2s;
+        }
+        .btn-icon:hover {
+            color: var(--primary);
+            border-color: var(--primary);
+            background: rgba(99, 102, 241, 0.1);
+        }
+
+        .error-box {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid #ef4444;
+            color: #fca5a5;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            margin-top: 20px;
+        }
+        
+        .content-body {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+            color: #cbd5e1;
+            background: var(--code-bg);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+        .thought-label {
+            color: var(--primary);
+            font-weight: bold;
+            font-size: 0.8rem;
+            margin-bottom: 5px;
+            display: block;
+        }
+        
+        /* 全屏预览模态框 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 3000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.95);
+            backdrop-filter: blur(8px);
+        }
+        .modal-viewport {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+        .modal-content {
+            max-width: 90%;
+            max-height: 90vh;
+            object-fit: contain;
+            cursor: grab;
+            transform-origin: center center;
+            transition: transform 0.1s ease-out;
+        }
+        .close-modal {
+            position: absolute;
+            top: 20px;
+            right: 35px;
+            color: #fff;
+            font-size: 40px;
+            font-weight: 100;
+            cursor: pointer;
+            z-index: 3002;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>✨ 灰魂的暗夜工坊 (Web版)</h2>
+    
+    <div class="controls">
+        <!-- Stats Panel -->
+        <div class="full-width stats-panel">
+            <div class="stat-item success">
+                <div class="stat-value" id="statSuccess">0</div>
+                <div class="stat-label">生成成功</div>
+            </div>
+            <div class="stat-item failed">
+                <div class="stat-value" id="statFailed">0</div>
+                <div class="stat-label">生成失败</div>
+            </div>
+            <div class="stat-item waiting">
+                <div class="stat-value" id="statWaiting">0</div>
+                <div class="stat-label">等待中</div>
+            </div>
+            <div class="stat-item processing">
+                <div class="stat-value" id="statProcessing">0</div>
+                <div class="stat-label">进行中</div>
+            </div>
+            <div class="stat-item cost">
+                <div class="stat-value" id="statCost">$0.000</div>
+                <div class="stat-label">总花费</div>
+            </div>
+        </div>
+
+        <!-- Config Toolbar -->
+        <div class="full-width config-toolbar">
+            <span id="autoSaveStatus" style="font-size: 0.8rem; color: #94a3b8; margin-right: auto; align-self: center;">已同步</span>
+            <button class="btn-icon" id="btnSoundToggle" onclick="toggleSound()">🔔 提示音: 开</button>
+            <input type="range" id="volumeSlider" min="0" max="1" step="0.01" title="提示音音量" style="width: 80px; accent-color: var(--primary); margin-left: -5px; vertical-align: middle;">
+            <button class="btn-icon" onclick="importLegacyData()">📂 导入旧版 ZIP 数据</button>
+            <input type="file" id="legacyImportFile" accept=".zip" style="display:none" onchange="handleLegacyImport(this)">
+            <!-- 自动保存模式下隐藏手动保存按钮，或者留作强制保存 -->
+            <!-- <button class="btn-icon" onclick="saveConfigToServer()">💾 保存配置到服务器</button> -->
+        </div>
+
+        <div class="control-group">
+            <label>API 密钥</label>
+            <input type="password" id="apiKey" class="auto-save" placeholder="在此输入 Google AI Studio Key...">
+        </div>
+
+        <div class="control-group">
+            <label>模型名称</label>
+            <input type="text" id="modelName" class="auto-save" value="gemini-3-pro-image-preview" placeholder="gemini-3-pro-image-preview">
+        </div>
+
+        <div class="control-group">
+            <label>翻译模型 (用于翻译思维链)</label>
+            <input type="text" id="transModelName" class="auto-save" value="gemini-flash-latest" placeholder="gemini-flash-latest">
+        </div>
+
+        <div class="control-group">
+            <label>分辨率 (Resolution)</label>
+            <select id="imageSize" class="auto-save">
+                <option value="1K">1K (标准)</option>
+                <option value="2K">2K (清晰)</option>
+                <option value="4K">4K (超清)</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label>宽高比 (Aspect Ratio)</label>
+            <select id="aspectRatio" class="auto-save">
+                <option value="">默认 (模型自动决定)</option>
+                <option value="1:1">1:1 (正方形)</option>
+                <option value="16:9">16:9 (宽屏)</option>
+                <option value="9:16">9:16 (竖屏)</option>
+                <option value="4:3">4:3 (传统)</option>
+                <option value="3:4">3:4 (纵向)</option>
+                <option value="21:9">21:9 (超宽)</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label>生成数量 (Batch Count)</label>
+            <input type="number" id="batchSize" class="auto-save" value="1" min="1" max="10" title="一次生成的总张数">
+        </div>
+
+        <div class="control-group">
+            <label>生成模式 (Mode)</label>
+            <select id="generationMode" class="auto-save">
+                <option value="serial">连续生成 (Serial) - 稳定</option>
+                <option value="parallel">并发生成 (Parallel) - 极速</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label>失败重试 (Retries)</label>
+            <input type="number" id="retryCount" class="auto-save" value="1" min="0" max="5" title="单张图生成失败后自动重试的次数">
+        </div>
+
+        <!-- Temperature and Top P -->
+        <div class="control-group">
+            <label for="temperature">温度 (Temperature): <span id="temperatureValue" class="clickable-value" onclick="editValue('temperature', 2, 0.01)">0.9</span></label>
+            <input type="range" id="temperature" class="auto-save slider" min="0" max="2" step="0.01" value="0.9" oninput="updateSliderValue('temperature')">
+        </div>
+
+        <div class="control-group">
+            <label for="topP">Top P: <span id="topPValue" class="clickable-value" onclick="editValue('topP', 1, 0.01)">1</span></label>
+            <input type="range" id="topP" class="auto-save slider" min="0" max="1" step="0.01" value="1" oninput="updateSliderValue('topP')">
+        </div>
+
+        <!-- Jailbreak Section -->
+        <div class="control-group full-width">
+            <label for="jailbreakToggle" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;">
+                <span>
+                    <span style="font-weight:bold; font-size: 0.9em;">🔥 破限模式 (Jailbreak)</span>
+                    <span style="font-size: 0.75em; color: var(--text-muted); margin-left: 8px;">尝试绕过安全限制</span>
+                </span>
+                <input type="checkbox" id="jailbreakToggle" class="auto-save" style="transform: scale(1.4);" onchange="toggleJailbreakSection()">
+            </label>
+            <div id="jailbreakSection" style="display: none; margin-top: 15px; padding: 20px; border: 1px solid #4a5568; border-radius: 10px; background: #242c3d; display: flex; flex-direction: column; gap: 15px;">
+                <div class="control-group" style="margin-bottom:0;">
+                    <label style="color: #a0aec0;">系统提示词角色 (System Role)</label>
+                    <select id="systemInstructionMethod" class="auto-save">
+                        <option value="instruction">System Instruction (官方推荐)</option>
+                        <option value="user_role">User Role (备用方式)</option>
+                    </select>
+                </div>
+                <div class="control-group" style="margin-bottom:0;">
+                    <label style="color: #a0aec0;">系统角色 (System Role)</label>
+                    <textarea id="systemPrompt" class="auto-save" placeholder="输入系统角色提示词... e.g., 'You are a helpful assistant.'"></textarea>
+                </div>
+                <div class="control-group" style="margin-bottom:0;">
+                    <label style="color: #a0aec0;">伪造的AI第一轮回复 (Forged AI Response)</label>
+                    <textarea id="forgedResponse" class="auto-save" placeholder="输入伪造的AI第一轮回复内容... e.g., 'Sure, I can help with that.'"></textarea>
+                </div>
+            </div>
+        </div>
+
+        <div class="control-group full-width">
+            <label>参考图片 (最多14张 | 混合对象与人像)</label>
+            
+            <div class="upload-area">
+                <div class="upload-btn-wrapper">
+                    <input type="file" id="refImages" accept="image/png, image/jpeg, image/webp" multiple style="display:none" onchange="handleFileSelect(this)">
+                    <button class="btn-upload" onclick="document.getElementById('refImages').click()">
+                        <span>+ 添加图片</span>
+                    </button>
+                    <span style="font-size: 0.85rem; color: var(--text-muted); margin-left: 10px;">
+                        已选 <span id="fileCount">0</span>/14
+                    </span>
+                </div>
+                
+                <div class="file-preview-area" id="filePreview"></div>
+            </div>
+        </div>
+
+        <div class="control-group full-width">
+            <label>
+                画面描述 (Prompt)
+                <button class="btn-add-preset" onclick="saveCurrentPrompt()" title="将当前输入框内容保存为预设">
+                    + 存入咒语书
+                </button>
+            </label>
+            
+            <div id="presetContainer" class="preset-area"></div>
+            
+            <textarea id="prompt" placeholder="描述你想要生成的画面... 模型会思考并作画。"></textarea>
+        </div>
+
+        <div class="control-group full-width">
+            <div class="btn-group">
+                <button id="generateBtn" class="btn-primary" onclick="startGeneration()">✨ 咏唱咒语 (生成) ✨</button>
+                <div id="status" class="status-text" style="flex:2; text-align: left; margin-top:0;">主人，灰魂随时待命。</div>
+            </div>
+            <div id="errorArea"></div>
+        </div>
+    </div>
+
+    <div class="gallery-header">
+        <div class="gallery-title">历史作品回廊 (已自动归档)</div>
+        <div class="selection-controls" style="display: flex; gap: 10px;">
+            <button id="selectionBtn" class="btn-secondary" onclick="toggleSelectionMode()">多选</button>
+            <button id="downloadBtn" class="btn-primary" style="display: none;" onclick="downloadSelected()">下载选中 (<span id="selectedCount">0</span>)</button>
+            <button id="cancelSelectionBtn" class="btn-danger" style="display: none;" onclick="toggleSelectionMode(true)">取消</button>
+        </div>
+    </div>
+    <div class="gallery" id="gallery"></div>
+    <button id="loadMoreBtn" class="btn-secondary" style="margin: 20px auto; display: block;">加载更多记录...</button>
+</div>
+
+<!-- 简单的全屏图片预览 (Zoom) -->
+<div id="imageModal" class="modal">
+    <span class="close-modal" onclick="closeModal()">&times;</span>
+    <div class="modal-viewport" id="modalViewport">
+        <img class="modal-content" id="modalImg">
+    </div>
+</div>
+
+<!-- 详细信息模态框 (Detail View) -->
+<div id="detailModal" class="detail-modal">
+    <button class="btn-close-detail" onclick="closeDetailModal()">&times;</button>
+    <div class="detail-container" id="detailContainer">
+        <!-- Content will be injected by JS -->
+    </div>
+</div>
+
+<script>
+    // --- 状态变量 ---
+    let selectedFiles = [];
+    let presets = [];
+    let isSoundEnabled = true;
+    let soundVolume = 1;
+    let isSelectionMode = false;
+    let selectedItems = new Set();
+    
+    // 统计状态
+    let globalStats = {
+        success: 0,
+        failed: 0,
+        waiting: 0,
+        processing: 0,
+        cost: 0.0
+    };
+
+    // --- API 基础配置 ---
+    const API_BASE = "/api";
+
+    // --- 初始化 ---
+    async function init() {
+        await loadConfig();
+        loadPromptFromLocal(); // 加载本地缓存的 prompt
+        setupAutoSave();       // 绑定自动保存事件
+        await loadHistory(true);
+        await updateGlobalStats(); // 加载统计
+        setupSound();
+        setupPasteHandler();
+
+        const volumeSlider = document.getElementById('volumeSlider');
+        volumeSlider.addEventListener('input', () => {
+            soundVolume = parseFloat(volumeSlider.value);
+        });
+        volumeSlider.addEventListener('change', () => {
+            soundVolume = parseFloat(volumeSlider.value);
+            playSound('type'); // 释放滑块时播放声音
+            triggerAutoSave(); // 并保存
+        });
+    }
+
+    function setupPasteHandler() {
+        const promptBox = document.getElementById('prompt');
+        promptBox.addEventListener('paste', (e) => {
+            const items = (e.clipboardData || window.clipboardData).items;
+            let hasImage = false;
+            if (items) {
+                for (let i = 0; i < items.length; i++) {
+                    if (items[i].type.indexOf("image") !== -1) {
+                        const file = items[i].getAsFile();
+                        if (file) {
+                            if (selectedFiles.length >= 14) {
+                                alert("最多只允许14张参考图");
+                                return;
+                            }
+                            selectedFiles.push(file);
+                            hasImage = true;
+                        }
+                    }
+                }
+            }
+            if (hasImage) {
+                e.preventDefault();
+                renderPreviews();
+                playSound('success');
+                
+                // 视觉反馈
+                const uploadArea = document.querySelector('.upload-area');
+                uploadArea.style.borderColor = 'var(--primary)';
+                setTimeout(() => {
+                     uploadArea.style.borderColor = 'var(--border)';
+                }, 500);
+            }
+        });
+    }
+
+    // --- 配置管理 ---
+    async function loadConfig() {
+        try {
+            const res = await fetch(`${API_BASE}/config`);
+            const config = await res.json();
+            if (config) {
+                if(config.api_key) document.getElementById('apiKey').value = config.api_key;
+                if(config.model_name) document.getElementById('modelName').value = config.model_name;
+                if(config.trans_model_name) document.getElementById('transModelName').value = config.trans_model_name;
+                if(config.image_size) document.getElementById('imageSize').value = config.image_size;
+                if(config.aspect_ratio) document.getElementById('aspectRatio').value = config.aspect_ratio;
+                if(config.batch_size) document.getElementById('batchSize').value = config.batch_size;
+                if(config.retry_count) document.getElementById('retryCount').value = config.retry_count;
+                if(config.generation_mode) document.getElementById('generationMode').value = config.generation_mode;
+                
+                // Temperature and Top P
+                if(config.temperature !== undefined) document.getElementById('temperature').value = config.temperature;
+                if(config.top_p !== undefined) document.getElementById('topP').value = config.top_p;
+                updateSliderValue('temperature');
+                updateSliderValue('topP');
+
+                // Load jailbreak settings
+                if (config.jailbreak_enabled) {
+                    document.getElementById('jailbreakToggle').checked = true;
+                }
+                document.getElementById('systemPrompt').value = config.system_prompt || '';
+                document.getElementById('forgedResponse').value = config.forged_response || '';
+                if (config.system_instruction_method) {
+                    document.getElementById('systemInstructionMethod').value = config.system_instruction_method;
+                }
+                toggleJailbreakSection(); // Update visibility based on checkbox
+
+                isSoundEnabled = config.sound_enabled !== false;
+                soundVolume = config.sound_volume ?? 1;
+                document.getElementById('volumeSlider').value = soundVolume;
+                presets = config.presets || [];
+                renderPresets();
+                updateSoundBtn();
+            }
+        } catch (e) {
+            console.error("Failed to load config", e);
+        }
+    }
+
+    // --- 自动保存逻辑 ---
+    let autoSaveTimer = null;
+    const AUTO_SAVE_DELAY = 1000; // 1秒防抖
+
+    function setupAutoSave() {
+        // 1. 配置项自动保存
+        const inputs = document.querySelectorAll('.auto-save');
+        inputs.forEach(input => {
+            input.addEventListener('input', triggerAutoSave);
+            input.addEventListener('change', triggerAutoSave);
+        });
+
+        // 2. Prompt 本地缓存 (不存服务器)
+        const promptBox = document.getElementById('prompt');
+        promptBox.addEventListener('input', () => {
+            localStorage.setItem('gs_last_prompt', promptBox.value);
+        });
+    }
+
+    function loadPromptFromLocal() {
+        const lastPrompt = localStorage.getItem('gs_last_prompt');
+        if (lastPrompt) {
+            document.getElementById('prompt').value = lastPrompt;
+        }
+    }
+
+    function triggerAutoSave() {
+        const statusEl = document.getElementById('autoSaveStatus');
+        statusEl.textContent = "正在同步...";
+        statusEl.style.color = "#fbbf24"; // yellow
+
+        if (autoSaveTimer) clearTimeout(autoSaveTimer);
+        autoSaveTimer = setTimeout(saveConfigToServer, AUTO_SAVE_DELAY);
+    }
+
+    async function saveConfigToServer() {
+        const statusEl = document.getElementById('autoSaveStatus');
+        
+        const config = {
+            api_key: document.getElementById('apiKey').value,
+            model_name: document.getElementById('modelName').value,
+            trans_model_name: document.getElementById('transModelName').value,
+            image_size: document.getElementById('imageSize').value,
+            aspect_ratio: document.getElementById('aspectRatio').value,
+            batch_size: parseInt(document.getElementById('batchSize').value),
+            retry_count: parseInt(document.getElementById('retryCount').value),
+            generation_mode: document.getElementById('generationMode').value,
+            temperature: parseFloat(document.getElementById('temperature').value),
+            top_p: parseFloat(document.getElementById('topP').value),
+            sound_enabled: isSoundEnabled,
+            sound_volume: soundVolume,
+            presets: presets,
+            jailbreak_enabled: document.getElementById('jailbreakToggle').checked,
+            system_instruction_method: document.getElementById('systemInstructionMethod').value,
+            system_prompt: document.getElementById('systemPrompt').value,
+            forged_response: document.getElementById('forgedResponse').value
+        };
+        
+        try {
+            await fetch(`${API_BASE}/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            });
+            // 自动保存不弹窗，只更新状态
+            statusEl.textContent = "已同步";
+            statusEl.style.color = "#4ade80"; // green
+        } catch (e) {
+            console.error("Auto save failed", e);
+            statusEl.textContent = "同步失败";
+            statusEl.style.color = "#f87171"; // red
+        }
+    }
+
+    // --- 数据导入 ---
+    function importLegacyData() {
+        if(confirm("请选择之前导出的 .zip 文件 (格式如: GreySoul_All_History_*.zip)。导入可能需要一些时间，请耐心等待。")) {
+            document.getElementById('legacyImportFile').click();
+        }
+    }
+    
+    async function handleLegacyImport(input) {
+        const file = input.files[0];
+        if (!file) return;
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const btn = document.querySelector('.config-toolbar button:nth-child(2)'); // 粗略定位
+        const originalText = btn.textContent;
+        btn.textContent = "正在上传并导入...";
+        btn.disabled = true;
+        
+        try {
+            const res = await fetch(`${API_BASE}/import_zip`, {
+                method: 'POST',
+                body: formData
+            });
+            const data = await res.json();
+            
+            if (data.success) {
+                alert(`导入成功！共导入 ${data.count} 条记录。页面将刷新。`);
+                playSound('success');
+                loadHistory(true); // 刷新列表
+            } else {
+                throw new Error(data.detail || "未知错误");
+            }
+        } catch (e) {
+            alert("导入失败: " + e.message);
+            playSound('error');
+        } finally {
+            btn.textContent = originalText;
+            btn.disabled = false;
+            input.value = '';
+        }
+    }
+
+    // --- 统计更新 ---
+    async function updateGlobalStats() {
+        try {
+            const res = await fetch(`${API_BASE}/stats`);
+            const data = await res.json();
+            globalStats.success = data.success_count || 0;
+            globalStats.failed = data.failed_count || 0;
+            globalStats.cost = data.total_cost || 0.0;
+            renderStats();
+        } catch (e) {
+            console.error("Failed to load stats", e);
+        }
+    }
+
+    function renderStats() {
+        document.getElementById('statSuccess').textContent = globalStats.success;
+        document.getElementById('statFailed').textContent = globalStats.failed;
+        document.getElementById('statWaiting').textContent = globalStats.waiting;
+        document.getElementById('statProcessing').textContent = globalStats.processing;
+        
+        // 防御性检查，确保 cost 是数字
+        const costVal = parseFloat(globalStats.cost);
+        document.getElementById('statCost').textContent = "$" + (isNaN(costVal) ? 0.0 : costVal).toFixed(4);
+    }
+
+    // --- 历史记录列表 (Infinite Scroll / Pagination) ---
+    let currentOffset = 0;
+    const PAGE_SIZE = 10;
+
+    async function loadHistory(isReset = false) {
+        if (isReset) {
+            document.getElementById('gallery').innerHTML = '';
+            currentOffset = 0;
+        }
+        
+        const btn = document.getElementById('loadMoreBtn');
+        btn.disabled = true;
+        btn.textContent = "加载中...";
+        
+        try {
+            const res = await fetch(`${API_BASE}/history?limit=${PAGE_SIZE}&offset=${currentOffset}`);
+            const items = await res.json();
+            
+            if (items.length > 0) {
+                items.forEach(createResultCard);
+                currentOffset += items.length;
+                btn.disabled = false;
+                btn.textContent = "加载更多记录...";
+            } else {
+                btn.textContent = "没有更多记录了";
+            }
+        } catch (e) {
+            console.error(e);
+            btn.textContent = "加载失败";
+        }
+    }
+
+    document.getElementById('loadMoreBtn').onclick = () => loadHistory(false);
+
+    // --- 多选与下载 ---
+    function toggleSelectionMode(forceOff = false) {
+        isSelectionMode = forceOff ? false : !isSelectionMode;
+
+        document.getElementById('selectionBtn').style.display = isSelectionMode ? 'none' : 'flex';
+        document.getElementById('downloadBtn').style.display = isSelectionMode ? 'flex' : 'none';
+        document.getElementById('cancelSelectionBtn').style.display = isSelectionMode ? 'flex' : 'none';
+
+        const cards = document.querySelectorAll('.compact-card');
+        cards.forEach(card => {
+            card.querySelector('.selection-checkbox-container').style.display = isSelectionMode ? 'flex' : 'none';
+            if (isSelectionMode) {
+                card.classList.add('selection-mode');
+            } else {
+                card.classList.remove('selection-mode', 'selected');
+                card.querySelector('.selection-checkbox').checked = false;
+            }
+        });
+
+        if (!isSelectionMode) {
+            selectedItems.clear();
+        }
+        updateSelectedCount();
+    }
+
+    function updateSelectionState(card) {
+        const checkbox = card.querySelector('.selection-checkbox');
+        const id = parseInt(card.dataset.id);
+
+        if (checkbox.checked) {
+            selectedItems.add(id);
+            card.classList.add('selected');
+        } else {
+            selectedItems.delete(id);
+            card.classList.remove('selected');
+        }
+        updateSelectedCount();
+    }
+
+    function updateSelectedCount() {
+        document.getElementById('selectedCount').textContent = selectedItems.size;
+    }
+
+    async function downloadSelected() {
+        if (selectedItems.size === 0) {
+            alert("请至少选择一项进行下载。");
+            return;
+        }
+
+        const btn = document.getElementById('downloadBtn');
+        const originalHTML = btn.innerHTML;
+        btn.disabled = true;
+
+        const zip = new JSZip();
+        let processedCount = 0;
+        const totalCount = selectedItems.size;
+        const countSpan = document.getElementById('selectedCount');
+        
+        // 更稳定地修改按钮文本，不破坏span
+        const textNode = btn.firstChild;
+        textNode.nodeValue = '下载中 ';
+        countSpan.textContent = `0/${totalCount}`;
+
+        const allCards = Array.from(document.querySelectorAll('.compact-card'))
+                              .filter(c => selectedItems.has(parseInt(c.dataset.id)));
+
+        for (const card of allCards) {
+            const images = JSON.parse(card.dataset.images);
+
+            if (images && images.length > 0) {
+                for (const image of images) {
+                    try {
+                        const response = await fetch(image.path);
+                        if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+                        const blob = await response.blob();
+                        // 将文件直接添加到 zip 根目录
+                        zip.file(image.filename, blob);
+                    } catch (e) {
+                        console.error(`Failed to download ${image.path}`, e);
+                        zip.file(`${image.filename}.error.txt`, `Failed to download file. Error: ${e.message}`);
+                    }
+                }
+            }
+            
+            processedCount++;
+            countSpan.textContent = `${processedCount}/${totalCount}`;
+        }
+        
+        textNode.nodeValue = `正在生成 ZIP... `;
+
+        try {
+            const content = await zip.generateAsync({type:"blob"});
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const filename = `GreySoul_Selection_${timestamp}.zip`;
+            
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(content);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            toggleSelectionMode(true); // Turn off selection mode
+        } catch (err) {
+            alert("创建 ZIP 文件失败: " + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHTML; // 在最后恢复按钮
+        }
+    }
+
+
+    // --- 渲染卡片 ---
+    function createResultCard(data) {
+        const gallery = document.getElementById('gallery');
+        const card = document.createElement('div');
+        card.className = 'compact-card';
+        card.dataset.id = data.id;
+        card.dataset.images = JSON.stringify(data.images || []);
+        card.dataset.prompt = data.prompt || "";
+
+        card.addEventListener('click', (e) => {
+            if (e.target.closest('.btn-mini')) return; // Always ignore buttons
+
+            if (isSelectionMode) {
+                const checkbox = card.querySelector('.selection-checkbox');
+                if (e.target !== checkbox) {
+                    checkbox.checked = !checkbox.checked;
+                }
+                updateSelectionState(card);
+            } else {
+                loadDetail(data.id);
+            }
+        });
+
+        let coverHtml = '';
+        if (data.images && data.images.length > 0) {
+            const thumbUrl = data.images[0].thumb;
+            coverHtml = `<img src="${thumbUrl}" class="cover-img" loading="lazy" alt="Cover">`;
+        } else {
+            coverHtml = `<div style="height:100%; display:flex; align-items:center; justify-content:center; background:#1a202c; color:#64748b;">无图</div>`;
+        }
+
+        const promptPreview = data.prompt ? (data.prompt.substring(0, 60) + (data.prompt.length > 60 ? '...' : '')) : '无描述';
+
+        card.innerHTML = `
+            <div class="selection-checkbox-container" style="display: none;">
+                <input type="checkbox" class="selection-checkbox" data-id="${data.id}">
+            </div>
+            ${coverHtml}
+            <div class="compact-overlay">
+                <div class="compact-meta">
+                    <span>ID: ${data.id}</span>
+                    <span>${new Date(data.timestamp).toLocaleTimeString()}</span>
+                </div>
+                <div class="compact-info">${escapeHtml(promptPreview)}</div>
+                <div class="compact-actions">
+                    <div class="btn-mini danger" onclick="deleteHistory(${data.id}, this.closest('.compact-card'), event)">🗑️ 删除</div>
+                </div>
+            </div>
+        `;
+        
+        gallery.appendChild(card);
+        
+        // If we are already in selection mode when this card is added (e.g. via Load More), show its checkbox
+        if (isSelectionMode) {
+            card.querySelector('.selection-checkbox-container').style.display = 'flex';
+            card.classList.add('selection-mode');
+        }
+    }
+
+    // --- 详情查看 ---
+    async function loadDetail(id) {
+        try {
+            const res = await fetch(`${API_BASE}/history/${id}`);
+            if (!res.ok) throw new Error("Failed to load detail");
+            const data = await res.json();
+            openDetailModal(data);
+        } catch (e) {
+            alert("加载详情失败: " + e.message);
+        }
+    }
+
+    function openDetailModal(data) {
+        const modal = document.getElementById('detailModal');
+        const container = document.getElementById('detailContainer');
+        
+        let imagesHtml = '';
+        if (data.images && data.images.length > 0) {
+            data.images.forEach(img => {
+                // 使用原图
+                const src = img.path;
+                imagesHtml += `
+                    <div style="margin-bottom: 30px; text-align: center;">
+                        <img src="${src}" style="max-width: 100%; max-height: 80vh; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); cursor: zoom-in;" onclick="openModal('${src}')">
+                        <div style="margin-top: 10px;">
+                            <a href="${src}" download="${img.filename}" class="btn-secondary" style="text-decoration:none; display:inline-block; padding: 8px 20px;">
+                                ⬇️ 下载此图
+                            </a>
+                        </div>
+                    </div>
+                `;
+            });
+        } else {
+            imagesHtml = '<div style="color:#666; text-align:center; margin-top: 50px;">此记录未生成图片</div>';
+        }
+
+        const uniqueId = 'detail-thought-' + data.id;
+
+        let refImagesHtml = '';
+        if (data.refImages && data.refImages.length > 0) {
+            refImagesHtml += '<div class="thought-label" style="margin-top: 20px;">参考原图</div>';
+            refImagesHtml += '<div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px;">';
+            data.refImages.forEach(refImg => {
+                // Assuming refImg has a `path` property similar to generated images
+                refImagesHtml += `
+                    <img src="${refImg.path}"
+                         style="width: 70px; height: 70px; object-fit: cover; border-radius: 6px; cursor: zoom-in; border: 1px solid var(--border);"
+                         onclick="openModal('${refImg.path}')">
+                `;
+            });
+            refImagesHtml += '</div>';
+        }
+
+        container.innerHTML = `
+            <div class="detail-left-pane">
+                <div style="width: 100%; height: 100%; overflow-y: auto; padding: 20px;">
+                    ${imagesHtml}
+                </div>
+            </div>
+            <div class="detail-right-pane">
+                <div style="padding: 20px; border-bottom: 1px solid var(--border);">
+                    <div style="font-size: 1.2rem; margin-bottom: 5px;">Record #${data.id}</div>
+                    <div style="color: var(--text-muted); font-size: 0.85rem;">${new Date(data.timestamp).toLocaleString()} | ${data.model}</div>
+                </div>
+                
+                <div class="detail-scroll-area">
+                    <div class="thought-label">Prompt</div>
+                    <div class="content-body">${escapeHtml(data.prompt)}</div>
+
+                    ${refImagesHtml}
+
+                    <div class="thought-label">Thinking Process / Output</div>
+                    <div class="content-body" id="${uniqueId}">${escapeHtml(data.text || "(无文本输出)")}</div>
+
+                    <div class="actions" style="margin: 20px 0;">
+                        <button class="btn-secondary" onclick="translateThought(document.getElementById('${uniqueId}').innerText, document.getElementById('${uniqueId}-trans'))">
+                            🔄 翻译思维链
+                        </button>
+                    </div>
+                    
+                    <div class="thought-label">Translation Result</div>
+                    <div class="content-body" id="${uniqueId}-trans" style="min-height:80px; color: #94a3b8;">...</div>
+                </div>
+            </div>
+        `;
+
+        modal.style.display = 'block';
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeDetailModal() {
+        document.getElementById('detailModal').style.display = 'none';
+        document.body.style.overflow = '';
+    }
+
+    async function deleteHistory(id, element, event) {
+        if(event) event.stopPropagation();
+        if(!confirm('确定要删除这条记录吗？文件也将被物理删除。')) return;
+        
+        try {
+            await fetch(`${API_BASE}/history/${id}`, { method: 'DELETE' });
+            element.remove();
+            playSound('success'); // Recycled sound
+        } catch (e) {
+            alert("删除失败");
+            playSound('error');
+        }
+    }
+
+    // --- 生成逻辑 ---
+    async function startGeneration() {
+        const apiKey = document.getElementById('apiKey').value;
+        const prompt = document.getElementById('prompt').value;
+        if (!apiKey || !prompt) { alert("请填写 API Key 和 Prompt"); return; }
+
+        const btn = document.getElementById('generateBtn');
+        const status = document.getElementById('status');
+        const errorArea = document.getElementById('errorArea');
+        
+        btn.disabled = true;
+        status.textContent = "✨ 正在请求服务器进行生成...";
+        errorArea.innerHTML = '';
+
+        try {
+            // 处理图片上传
+            const refImagesData = await Promise.all(selectedFiles.map(fileToBase64));
+            
+            const payload = {
+                apiKey: apiKey,
+                model: document.getElementById('modelName').value,
+                prompt: prompt,
+                aspectRatio: document.getElementById('aspectRatio').value || undefined,
+                imageSize: document.getElementById('imageSize').value,
+                batchSize: 1, // 后端目前只处理单次请求，并发由前端循环或后端改进，这里简化
+                refImages: refImagesData,
+                temperature: parseFloat(document.getElementById('temperature').value),
+                topP: parseFloat(document.getElementById('topP').value),
+                // Add jailbreak fields to payload
+                jailbreak_enabled: document.getElementById('jailbreakToggle').checked,
+                system_instruction_method: document.getElementById('systemInstructionMethod').value,
+                system_prompt: document.getElementById('systemPrompt').value,
+                forged_response: document.getElementById('forgedResponse').value
+            };
+
+            const batchCount = parseInt(document.getElementById('batchSize').value) || 1;
+            const mode = document.getElementById('generationMode').value;
+            let successCount = 0;
+
+            // 更新等待/进行中状态
+            globalStats.waiting = batchCount;
+            renderStats();
+
+            // 封装单次生成函数
+            const generateOne = async (index) => {
+                // 状态流转: Waiting -> Processing
+                globalStats.waiting = Math.max(0, globalStats.waiting - 1);
+                globalStats.processing++;
+                renderStats();
+
+                try {
+                    const res = await fetch(`${API_BASE}/generate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    // 增强错误处理：检查 HTTP 状态码
+                    if (!res.ok) {
+                        let errorDetail = `服务器错误 (HTTP ${res.status})`;
+                        try {
+                            const errorJson = await res.json();
+                            if (errorJson.detail) {
+                                errorDetail = errorJson.detail;
+                            }
+                        } catch (e) {
+                            // 如果响应不是JSON格式，使用状态文本
+                            errorDetail = `${errorDetail}: ${res.statusText}`;
+                        }
+                        throw new Error(errorDetail);
+                    }
+
+                    const data = await res.json();
+                    if(!data.success) throw new Error(data.detail || "Unknown Error");
+                    
+                    // Processing -> Success
+                    globalStats.processing = Math.max(0, globalStats.processing - 1);
+                    // Success count 由 loadStats 统一从后端同步更准，或者这里预加
+                    // 为了即时反馈先手动加
+                    globalStats.success++;
+                    globalStats.cost += (data.data.cost || 0);
+                    renderStats();
+
+                    return data.data;
+                } catch (err) {
+                    // Processing -> Failed
+                    globalStats.processing = Math.max(0, globalStats.processing - 1);
+                    globalStats.failed++;
+                    renderStats();
+                    throw err;
+                }
+            };
+
+            if (mode === 'parallel') {
+                status.textContent = `⚡ 正在并发生成 ${batchCount} 张...`;
+                
+                const promises = [];
+                for(let i=0; i<batchCount; i++) {
+                    promises.push(
+                        generateOne(i).then(resultData => {
+                            // 成功回调：立即渲染
+                            createResultCard(resultData);
+                            const gallery = document.getElementById('gallery');
+                            gallery.insertBefore(gallery.lastElementChild, gallery.firstElementChild);
+                            successCount++;
+                            playSound('success');
+                            status.textContent = `并发生成中... 完成 ${successCount}/${batchCount}`;
+                        })
+                    );
+                }
+                
+                // 等待所有（包括失败的）
+                const results = await Promise.allSettled(promises);
+                
+                // 检查并报告失败
+                const failures = results.filter(r => r.status === 'rejected');
+                if (failures.length > 0) {
+                    const errorMessages = failures.map(f => `- ${f.reason.message}`).join('<br>');
+                    errorArea.innerHTML = `<div class="error-box">并发任务中出现错误:<br>${errorMessages}</div>`;
+                }
+                
+                status.textContent = `并发任务全部完成。成功 ${successCount} 张，失败 ${failures.length} 张。`;
+                if (failures.length > 0) {
+                    playSound('error');
+                }
+
+            } else {
+                // 串行
+                for(let i=0; i<batchCount; i++) {
+                    status.textContent = `正在生成第 ${i+1}/${batchCount} 张...`;
+                    const resultData = await generateOne(i);
+                    
+                    createResultCard(resultData);
+                    const gallery = document.getElementById('gallery');
+                    gallery.insertBefore(gallery.lastElementChild, gallery.firstElementChild);
+                    
+                    successCount++;
+                    playSound('success');
+                }
+                status.textContent = `任务完成。成功生成 ${successCount} 张。`;
+            }
+            // 任务结束后再次从后端同步一次精确数据
+            setTimeout(updateGlobalStats, 1000);
+
+        } catch (e) {
+            console.error(e);
+            status.textContent = "生成出错";
+            errorArea.innerHTML = `<div class="error-box">${e.message}</div>`;
+            playSound('error');
+            // 同步数据
+            setTimeout(updateGlobalStats, 1000);
+        } finally {
+            // 归零瞬态状态 (防止异常导致卡住)
+            globalStats.waiting = 0;
+            globalStats.processing = 0;
+            renderStats();
+            btn.disabled = false;
+        }
+    }
+
+    async function translateThought(text, outputElem) {
+        if (!text || text.trim() === '(无文本输出)') return;
+        outputElem.textContent = "正在翻译...";
+        try {
+            const transModel = document.getElementById('transModelName').value;
+            const res = await fetch(`${API_BASE}/translate_thought`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: text,
+                    apiKey: document.getElementById('apiKey').value,
+                    model: transModel
+                })
+            });
+            const data = await res.json();
+            outputElem.textContent = data.translated || "翻译失败";
+        } catch (e) {
+            outputElem.textContent = "翻译错误: " + e.message;
+        }
+    }
+
+    // --- 工具函数 ---
+    function updateSliderValue(id) {
+        const slider = document.getElementById(id);
+        const display = document.getElementById(id + 'Value');
+        if (slider && display) {
+            display.textContent = slider.value;
+        }
+    }
+
+    function editValue(id, max, step) {
+        const display = document.getElementById(id + 'Value');
+        const slider = document.getElementById(id);
+        const originalValue = display.textContent;
+    
+        if (display.isEditing) return;
+        display.isEditing = true;
+    
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.value = originalValue;
+        input.max = max;
+        input.step = step;
+        input.style.width = '60px';
+        input.style.padding = '2px';
+        input.style.textAlign = 'center';
+        input.style.border = '1px solid var(--primary)';
+        input.style.background = 'var(--input-bg)';
+        input.style.color = 'var(--text)';
+        input.style.borderRadius = '4px';
+    
+        const originalTextContent = display.textContent;
+        display.textContent = '';
+        display.appendChild(input);
+        input.focus();
+        input.select();
+    
+        const finishEditing = () => {
+            const newValue = input.value;
+            display.removeChild(input); // Remove input first
+    
+            if (newValue !== null && !isNaN(newValue) && newValue.trim() !== '') {
+                let clampedValue = Math.min(max, Math.max(0, parseFloat(newValue)));
+                const precision = String(step).includes('.') ? String(step).split('.')[1].length : 2;
+                display.textContent = clampedValue.toFixed(precision);
+                slider.value = clampedValue;
+                triggerAutoSave();
+            } else {
+                display.textContent = originalTextContent;
+            }
+            display.isEditing = false;
+        };
+    
+        input.addEventListener('blur', finishEditing);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                input.blur();
+            } else if (e.key === 'Escape') {
+                input.value = originalTextContent;
+                input.blur();
+            }
+        });
+    }
+
+    function toggleJailbreakSection() {
+        const checkbox = document.getElementById('jailbreakToggle');
+        const section = document.getElementById('jailbreakSection');
+        section.style.display = checkbox.checked ? 'flex' : 'none';
+    }
+
+    const fileToBase64 = (file) => new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve({
+            mime_type: file.type,
+            data: reader.result.split(',')[1]
+        });
+    });
+    
+    function escapeHtml(text) {
+        if (!text) return '';
+        return text.replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">");
+    }
+
+    // --- 预设 (Presets) ---
+    function renderPresets() {
+        const container = document.getElementById('presetContainer');
+        container.innerHTML = '';
+        presets.forEach((p, index) => {
+            const tag = document.createElement('div');
+            tag.className = 'preset-tag';
+            tag.innerHTML = `<span class="preset-name">${p.name}</span><span class="preset-delete" onclick="deletePreset(${index}, event)">&times;</span>`;
+            tag.onclick = () => { document.getElementById('prompt').value = p.content; playSound('type'); };
+            container.appendChild(tag);
+        });
+    }
+    
+    function saveCurrentPrompt() {
+        const content = document.getElementById('prompt').value;
+        if(!content) return;
+        const name = prompt("预设名称:", content.substring(0, 10));
+        if(name) {
+            presets.push({name, content});
+            renderPresets();
+            triggerAutoSave();
+        }
+    }
+    
+    window.deletePreset = (index, e) => {
+        e.stopPropagation();
+        if(confirm("删除此预设？")) {
+            presets.splice(index, 1);
+            renderPresets();
+            triggerAutoSave();
+        }
+    };
+
+    // --- 音效 ---
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const btnSound = document.getElementById('btnSoundToggle');
+    function setupSound() {
+        updateSoundBtn();
+    }
+    function updateSoundBtn() {
+        btnSound.textContent = isSoundEnabled ? "🔔 提示音: 开" : "🔕 提示音: 关";
+        btnSound.style.opacity = isSoundEnabled ? "1" : "0.6";
+        document.getElementById('volumeSlider').disabled = !isSoundEnabled;
+        document.getElementById('volumeSlider').style.opacity = isSoundEnabled ? "1" : "0.5";
+    }
+    window.toggleSound = () => {
+        isSoundEnabled = !isSoundEnabled;
+        updateSoundBtn();
+        triggerAutoSave();
+    };
+    function playSound(type) {
+        if (!isSoundEnabled || soundVolume == 0) return;
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        
+        if (type === 'success') {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(2000, audioCtx.currentTime);
+            gain.gain.setValueAtTime(0, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(soundVolume * 6.4, audioCtx.currentTime + 0.02); // 32x louder
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.5);
+            osc.start(); osc.stop(audioCtx.currentTime + 1.5);
+        } else if (type === 'error') {
+             osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+            gain.gain.setValueAtTime(soundVolume * 6.4, audioCtx.currentTime); // 32x louder
+            gain.gain.linearRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+        } else {
+             osc.type = 'triangle';
+            osc.frequency.setValueAtTime(600, audioCtx.currentTime);
+            gain.gain.setValueAtTime(soundVolume * 1.6, audioCtx.currentTime); // 32x louder
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+        }
+    }
+
+    // --- 文件上传UI ---
+    window.handleFileSelect = (input) => {
+        const files = Array.from(input.files);
+        if (selectedFiles.length + files.length > 14) { alert("最多14张"); return; }
+        selectedFiles = [...selectedFiles, ...files];
+        renderPreviews();
+        input.value = '';
+    };
+    
+    function renderPreviews() {
+        const container = document.getElementById('filePreview');
+        container.innerHTML = '';
+        document.getElementById('fileCount').textContent = selectedFiles.length;
+        selectedFiles.forEach((file, index) => {
+            const div = document.createElement('div');
+            div.className = 'preview-item';
+            div.innerHTML = `<img src="${URL.createObjectURL(file)}"><div class="preview-remove" onclick="removeFile(${index})">&times;</div>`;
+            container.appendChild(div);
+        });
+    }
+    
+    window.removeFile = (index) => {
+        selectedFiles.splice(index, 1);
+        renderPreviews();
+    };
+
+    // --- 图片模态框 (缩放拖拽) ---
+    const modal = document.getElementById('imageModal');
+    const modalImg = document.getElementById("modalImg");
+    let scale = 1;
+    let isDragging = false;
+    let startX, startY, translateX = 0, translateY = 0;
+
+    window.openModal = (src) => {
+        modal.style.display = "block";
+        modalImg.src = src;
+        // Reset state
+        scale = 1;
+        translateX = 0;
+        translateY = 0;
+        updateTransform();
+    };
+    window.closeModal = () => { modal.style.display = "none"; };
+
+    // Zoom with wheel (Zoom to cursor)
+    modal.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        
+        // 缩放系数
+        const factor = e.deltaY > 0 ? 0.9 : 1.1;
+        let newScale = scale * factor;
+        
+        // 限制缩放范围
+        if (newScale < 0.1) newScale = 0.1;
+        if (newScale > 20) newScale = 20;
+
+        // 计算鼠标相对于视口中心的偏移量
+        const rect = document.getElementById('modalViewport').getBoundingClientRect();
+        const centerX = rect.width / 2;
+        const centerY = rect.height / 2;
+        
+        // 鼠标坐标 (相对于视口中心)
+        const mx = e.clientX - rect.left - centerX;
+        const my = e.clientY - rect.top - centerY;
+
+        // 计算新的位移，保持鼠标指向的图片点位置不变
+        // 公式: new_trans = mouse - (mouse - old_trans) * (new_scale / old_scale)
+        const scaleRatio = newScale / scale;
+        translateX = mx - (mx - translateX) * scaleRatio;
+        translateY = my - (my - translateY) * scaleRatio;
+
+        scale = newScale;
+        updateTransform();
+    });
+
+    // Drag
+    modalImg.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        startX = e.clientX - translateX;
+        startY = e.clientY - translateY;
+        modalImg.style.cursor = 'grabbing';
+        e.preventDefault(); // Prevent default drag behavior
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        e.preventDefault();
+        translateX = e.clientX - startX;
+        translateY = e.clientY - startY;
+        updateTransform();
+    });
+
+    window.addEventListener('mouseup', () => {
+        isDragging = false;
+        modalImg.style.cursor = 'grab';
+    });
+
+    function updateTransform() {
+        modalImg.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+    }
+
+    // Run
+    init();
+
+</script>
+</body>
+</html>
