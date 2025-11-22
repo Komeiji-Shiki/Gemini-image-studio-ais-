@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+pillow
+httpx
+aiofiles
+python-multipart
