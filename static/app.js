@@ -6,6 +6,11 @@ let isSoundEnabled = true;
 let soundVolume = 1;
 let isSelectionMode = false;
 let selectedItems = new Set();
+let generationController = null; // 用于中止 fetch 请求
+
+// 分别存储不同 API 的 Base URL
+let geminiBaseUrl = "https://generativelanguage.googleapis.com";
+let openaiBaseUrl = "https://api.openai.com";
 
 // 统计状态
 let globalStats = {
@@ -94,16 +99,38 @@ async function loadConfig() {
         if (config) {
             // 基本设置
             if (config.api_key) document.getElementById('apiKey').value = config.api_key;
-            if (config.api_base_url) document.getElementById('baseUrl').value = config.api_base_url;
-            if (config.api_format) switchApiFormat(config.api_format, false); // 初始加载不触发保存
+
+            // --- Base URL Loading Logic ---
+            // Set defaults first, in case config is partial
+            geminiBaseUrl = "https://generativelanguage.googleapis.com";
+            openaiBaseUrl = "https://api.openai.com";
+            
+            // Load new, specific URLs if they exist, overriding defaults
+            if (config.gemini_api_base_url) geminiBaseUrl = config.gemini_api_base_url;
+            if (config.openai_api_base_url) openaiBaseUrl = config.openai_api_base_url;
+        
+            // Backward compatibility for old config files with a single api_base_url
+            if (config.api_base_url && !config.gemini_api_base_url && !config.openai_api_base_url) {
+                if (config.api_format === 'gemini') {
+                    geminiBaseUrl = config.api_base_url;
+                } else { // openai or openai_chat
+                    openaiBaseUrl = config.api_base_url;
+                }
+            }
+            // This will set the initial format and trigger the URL swap in the input field
+            if (config.api_format) switchApiFormat(config.api_format, false);
             if (config.model_name) document.getElementById('modelName').value = config.model_name;
             if (config.trans_model_name) document.getElementById('transModelName').value = config.trans_model_name;
 
             // 生成参数
             if (config.image_size) document.getElementById('imageSize').value = config.image_size;
+            if (config.image_format) {
+                document.getElementById('imageFormat').value = config.image_format;
+            }
             if (config.aspect_ratio) document.getElementById('aspectRatio').value = config.aspect_ratio;
             if (config.batch_size) document.getElementById('batchSize').value = config.batch_size;
             if (config.retry_count !== undefined) document.getElementById('retryCount').value = config.retry_count;
+            if (config.timeout !== undefined) document.getElementById('timeout').value = config.timeout;
             if (config.generation_mode) document.getElementById('generationMode').value = config.generation_mode;
             if (config.temperature !== undefined) document.getElementById('temperature').value = config.temperature;
             if (config.top_p !== undefined) document.getElementById('topP').value = config.top_p;
@@ -117,7 +144,7 @@ async function loadConfig() {
             if (config.system_instruction_method) {
                 document.getElementById('systemInstructionMethod').value = config.system_instruction_method;
             }
-            toggleJailbreakSection();
+            toggleSystemOverrideSection();
 
             // 高级设置
             document.getElementById('includeThoughtsToggle').checked = config.include_thoughts || false;
@@ -207,16 +234,27 @@ function triggerAutoSave() {
 async function saveConfigToServer() {
     const statusEl = document.getElementById('autoSaveStatus');
 
+    // Before saving, ensure the JS variables for URLs are updated with the current input value
+    const currentUrlInBox = document.getElementById('baseUrl').value.trim();
+    if (currentApiFormat === 'gemini') {
+        geminiBaseUrl = currentUrlInBox;
+    } else { // openai or openai_chat
+        openaiBaseUrl = currentUrlInBox;
+    }
+    
     const config = {
         api_key: document.getElementById('apiKey').value,
-        api_base_url: document.getElementById('baseUrl').value,
+        gemini_api_base_url: geminiBaseUrl,
+        openai_api_base_url: openaiBaseUrl,
         api_format: currentApiFormat,
         model_name: document.getElementById('modelName').value,
         trans_model_name: document.getElementById('transModelName').value,
+        image_format: document.getElementById('imageFormat').value,
         image_size: document.getElementById('imageSize').value,
         aspect_ratio: document.getElementById('aspectRatio').value,
         batch_size: parseInt(document.getElementById('batchSize').value, 10),
         retry_count: parseInt(document.getElementById('retryCount').value, 10),
+        timeout: parseFloat(document.getElementById('timeout').value) || 120,
         generation_mode: document.getElementById('generationMode').value,
         temperature: parseFloat(document.getElementById('temperature').value),
         top_p: parseFloat(document.getElementById('topP').value),
@@ -270,7 +308,7 @@ async function saveConfigToServer() {
 
 // --- 数据导入 ---
 function importLegacyData() {
-    if (confirm("请选择之前导出的 .zip 文件 (格式如: Gemini_All_History_*.zip)。导入可能需要一些时间，请耐心等待。")) {
+    if (confirm("请选择之前导出的 .zip 文件 (格式如: GreySoul_All_History_*.zip)。导入可能需要一些时间，请耐心等待。")) {
         document.getElementById('legacyImportFile').click();
     }
 }
@@ -378,8 +416,9 @@ async function loadHistory(isReset = false) {
 function toggleSelectionMode(forceOff = false) {
     isSelectionMode = forceOff ? false : !isSelectionMode;
 
-    document.getElementById('selectionBtn').style.display = isSelectionMode ? 'flex' : 'flex';
-    document.getElementById('selectionBtn').style.visibility = isSelectionMode ? 'hidden' : 'visible';
+    const selectionBtn = document.getElementById('selectionBtn');
+    selectionBtn.style.display = 'flex';
+    selectionBtn.style.visibility = isSelectionMode ? 'hidden' : 'visible';
     document.getElementById('downloadBtn').style.display = isSelectionMode ? 'flex' : 'none';
     document.getElementById('cancelSelectionBtn').style.display = isSelectionMode ? 'flex' : 'none';
 
@@ -474,7 +513,7 @@ async function downloadSelected() {
     try {
         const content = await zip.generateAsync({ type: "blob" });
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const filename = `Gemini_Selection_${timestamp}.zip`;
+        const filename = `GreySoul_Selection_${timestamp}.zip`;
 
         const link = document.createElement('a');
         link.href = URL.createObjectURL(content);
@@ -490,6 +529,31 @@ async function downloadSelected() {
         btn.disabled = false;
         btn.innerHTML = originalHTML;
     }
+}
+
+// --- 占位卡片（Skeleton，用于流式预览） ---
+function createPlaceholderCard() {
+    const gallery = document.getElementById('gallery');
+    const card = document.createElement('div');
+    card.className = 'compact-card placeholder-card';
+
+    card.innerHTML = `
+        <div class="placeholder-cover"></div>
+        <div class="compact-overlay">
+            <div class="compact-meta">
+                <span>生成中...</span>
+                <span>${new Date().toLocaleTimeString()}</span>
+            </div>
+            <div class="compact-info placeholder-text">等待模型响应...</div>
+        </div>
+    `;
+
+    if (gallery.firstElementChild) {
+        gallery.insertBefore(card, gallery.firstElementChild);
+    } else {
+        gallery.appendChild(card);
+    }
+    return card;
 }
 
 // --- 渲染卡片 ---
@@ -685,13 +749,18 @@ async function startGeneration() {
         return;
     }
 
-    const btn = document.getElementById('generateBtn');
+    const generateBtn = document.getElementById('generateBtn');
+    const stopBtn = document.getElementById('stopBtn');
     const status = document.getElementById('status');
     const errorArea = document.getElementById('errorArea');
 
-    btn.disabled = true;
-    status.textContent = "✨ 正在请求服务器...";
+    generateBtn.style.display = 'none';
+    stopBtn.style.display = 'block';
+    status.textContent = "✨ 正在请求服务器进行生成...";
     errorArea.innerHTML = '';
+
+    generationController = new AbortController();
+    const signal = generationController.signal;
 
     try {
         // 处理图片上传
@@ -704,9 +773,11 @@ async function startGeneration() {
             api_format: currentApiFormat,
             api_base_url: document.getElementById('baseUrl').value,
             aspectRatio: document.getElementById('aspectRatio').value || undefined,
+            image_format: document.getElementById('imageFormat').value,
             imageSize: document.getElementById('imageSize').value,
             batchSize: 1, // 后端目前只处理单次请求
             refImages: refImagesData,
+            timeout: parseFloat(document.getElementById('timeout').value) || 120,
             temperature: parseFloat(document.getElementById('temperature').value),
             topP: parseFloat(document.getElementById('topP').value),
 
@@ -730,11 +801,14 @@ async function startGeneration() {
                     document.getElementById('safeCivic').value || 'BLOCK_NONE'
             },
 
-            jailbreak_enabled: document.getElementById('jailbreakToggle').checked,
-            system_instruction_method: document.getElementById('systemInstructionMethod').value,
-            system_prompt: document.getElementById('systemPrompt').value,
-            forged_response: document.getElementById('forgedResponse').value
+            jailbreak_enabled: document.getElementById('jailbreakToggle').checked
         };
+
+        if (payload.jailbreak_enabled) {
+            payload.system_instruction_method = document.getElementById('systemInstructionMethod').value;
+            payload.system_prompt = document.getElementById('systemPrompt').value;
+            payload.forged_response = document.getElementById('forgedResponse').value;
+        }
 
         const batchCount = parseInt(document.getElementById('batchSize').value, 10) || 1;
         const mode = document.getElementById('generationMode').value;
@@ -752,23 +826,23 @@ async function startGeneration() {
                 const res = await fetch(`${API_BASE}/generate`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(payload),
+                    signal: signal
                 });
 
+                const resText = await res.text();
                 if (!res.ok) {
                     let errorDetail = `服务器错误 (HTTP ${res.status})`;
                     try {
-                        const errorJson = await res.json();
-                        if (errorJson.detail) {
-                            errorDetail = errorJson.detail;
-                        }
+                        const errorJson = JSON.parse(resText);
+                        if (errorJson.detail) errorDetail = errorJson.detail;
                     } catch (_) {
-                        errorDetail = `${errorDetail}: ${res.statusText}`;
+                        errorDetail = `${errorDetail}: ${resText}`;
                     }
                     throw new Error(errorDetail);
                 }
-
-                const data = await res.json();
+                
+                const data = JSON.parse(resText);
                 if (!data.success) throw new Error(data.detail || "Unknown Error");
 
                 globalStats.processing = Math.max(0, globalStats.processing - 1);
@@ -789,51 +863,54 @@ async function startGeneration() {
 
         if (mode === 'parallel') {
             status.textContent = `⚡ 正在并发生成 ${batchCount} 张...`;
-
-            const promises = [];
-            for (let i = 0; i < batchCount; i++) {
-                promises.push(
-                    generateOne().then(resultData => {
-                        createResultCard(resultData);
-                        const gallery = document.getElementById('gallery');
-                        if (gallery.firstElementChild && gallery.lastElementChild) {
-                            gallery.insertBefore(gallery.lastElementChild, gallery.firstElementChild);
-                        }
-                        successCount++;
-                        playSound('success');
-                        status.textContent = `并发生成中... 完成 ${successCount}/${batchCount}`;
-                    })
-                );
-            }
-
-            const results = await Promise.allSettled(promises);
-
+            const promises = Array(batchCount).fill(0).map(() =>
+                generateOne()
+                .then(resultData => {
+                    createResultCard(resultData);
+                    const gallery = document.getElementById('gallery');
+                    if (gallery.firstElementChild && gallery.lastElementChild) {
+                       gallery.insertBefore(gallery.lastElementChild, gallery.firstElementChild);
+                    }
+                    successCount++;
+                    playSound('success');
+                    status.textContent = `并发生成中... 完成 ${successCount}/${batchCount}`;
+                    return { status: 'fulfilled', value: resultData };
+                })
+                .catch(err => {
+                    return { status: 'rejected', reason: err };
+                })
+            );
+            
+            const results = await Promise.all(promises);
             const failures = results.filter(r => r.status === 'rejected');
+            
             if (failures.length > 0) {
                 const errorMessages = failures
                     .map(f => `- ${escapeHtml(f.reason && f.reason.message ? f.reason.message : String(f.reason))}`)
                     .join('<br>');
                 errorArea.innerHTML = `<div class="error-box">并发任务中出现错误:<br>${errorMessages}</div>`;
-            }
-
-            status.textContent = `并发任务全部完成。成功 ${successCount} 张，失败 ${failures.length} 张。`;
-            if (failures.length > 0) {
                 playSound('error');
             }
 
-        } else {
+            status.textContent = `并发任务全部完成。成功 ${successCount} 张，失败 ${failures.length} 张。`;
+            
+        } else { // Serial mode
             for (let i = 0; i < batchCount; i++) {
                 status.textContent = `正在生成第 ${i + 1}/${batchCount} 张...`;
-                const resultData = await generateOne();
-
-                createResultCard(resultData);
-                const gallery = document.getElementById('gallery');
-                if (gallery.firstElementChild && gallery.lastElementChild) {
-                    gallery.insertBefore(gallery.lastElementChild, gallery.firstElementChild);
+                try {
+                    const resultData = await generateOne();
+                    createResultCard(resultData);
+                    const gallery = document.getElementById('gallery');
+                     if (gallery.firstElementChild && gallery.lastElementChild) {
+                       gallery.insertBefore(gallery.lastElementChild, gallery.firstElementChild);
+                    }
+                    successCount++;
+                    playSound('success');
+                } catch(err) {
+                    const msg = escapeHtml(err.message || String(err));
+                    errorArea.innerHTML += `<div class="error-box">第 ${i + 1} 张生成失败: ${msg}</div>`;
+                    playSound('error');
                 }
-
-                successCount++;
-                playSound('success');
             }
             status.textContent = `任务完成。成功生成 ${successCount} 张。`;
         }
@@ -841,21 +918,35 @@ async function startGeneration() {
         setTimeout(updateGlobalStats, 1000);
 
     } catch (e) {
-        console.error(e);
-        const msg = escapeHtml(e.message || String(e));
-        status.textContent = "生成出错";
-        errorArea.innerHTML = `<div class="error-box">${msg}</div>`;
-        playSound('error');
+        if (e.name !== 'AbortError') {
+            console.error(e);
+            const msg = escapeHtml(e.message || String(e));
+            status.textContent = "生成出错";
+            errorArea.innerHTML = `<div class="error-box">${msg}</div>`;
+            playSound('error');
+        } else {
+            status.textContent = "任务已手动停止。";
+        }
         setTimeout(updateGlobalStats, 1000);
     } finally {
         globalStats.waiting = 0;
         globalStats.processing = 0;
         renderStats();
-        btn.disabled = false;
+        generateBtn.style.display = 'block';
+        stopBtn.style.display = 'none';
+        generationController = null;
     }
 }
 
+
 // --- 翻译思维链 ---
+function stopGeneration() {
+    if (generationController) {
+        generationController.abort();
+        generationController = null;
+    }
+}
+
 async function translateThought(text, outputElem) {
     if (!text || text.trim() === '(无文本输出)') return;
     outputElem.textContent = "正在翻译...";
@@ -968,7 +1059,7 @@ function editValue(id, max, step) {
     });
 }
 
-function toggleJailbreakSection() {
+function toggleSystemOverrideSection() {
     const checkbox = document.getElementById('jailbreakToggle');
     const section = document.getElementById('jailbreakSection');
     section.style.display = checkbox.checked ? 'flex' : 'none';
@@ -1000,15 +1091,31 @@ function escapeHtml(text) {
 }
 
 function switchApiFormat(format, doSave = true) {
-    currentApiFormat = format;
+    const baseUrlInput = document.getElementById('baseUrl');
+    const currentUrlInBox = baseUrlInput.value.trim();
+    
+    // Save current input value to its corresponding variable before switching
+    if (currentApiFormat === 'gemini') {
+        geminiBaseUrl = currentUrlInBox;
+    } else { // openai or openai_chat
+        openaiBaseUrl = currentUrlInBox;
+    }
+
+    currentApiFormat = format; // Update the format state
+    
+    // Update UI buttons to show the active format
     const buttons = document.querySelectorAll('#apiFormatGroup .btn-secondary');
     buttons.forEach(btn => {
-        if (btn.dataset.value === format) {
-            btn.classList.add('active');
-        } else {
-            btn.classList.remove('active');
-        }
+        btn.classList.toggle('active', btn.dataset.value === format);
     });
+
+    // Load the URL for the new format into the input box
+    if (format === 'gemini') {
+        baseUrlInput.value = geminiBaseUrl;
+    } else { // openai or openai_chat
+        baseUrlInput.value = openaiBaseUrl;
+    }
+
     if (doSave) {
         triggerAutoSave();
     }
@@ -1280,7 +1387,7 @@ window.downloadSelected = downloadSelected;
 window.openModal = openModal;
 window.closeModal = closeModal;
 window.closeDetailModal = closeDetailModal;
-window.toggleJailbreakSection = toggleJailbreakSection;
+window.toggleSystemOverrideSection = toggleSystemOverrideSection;
 window.toggleSafetySettingsSection = toggleSafetySettingsSection;
 window.updateSliderValue = updateSliderValue;
 window.editValue = editValue;

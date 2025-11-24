@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gemini Pro Web UI</title>
+    <title>AI 图像生成工作台</title>
 
     <!-- 样式 -->
     <link rel="stylesheet" href="styles.css">
@@ -15,7 +15,7 @@
 </head>
 <body>
 <div class="container">
-    <h2>✨ Gemini Pro Web UI</h2>
+    <h2>✨ AI 图像生成工作台</h2>
 
     <div class="controls">
         <!-- Stats Panel -->
@@ -88,6 +88,14 @@
             </select>
         </div>
 
+<div class="control-group">
+    <label>输出格式 (Image Format)</label>
+    <select id="imageFormat" class="auto-save">
+        <option value="jpeg">JPEG</option>
+        <option value="png">PNG</option>
+    </select>
+</div>
+
         <div class="control-group">
             <label>宽高比 (Aspect Ratio)</label>
             <select id="aspectRatio" class="auto-save">
@@ -119,6 +127,11 @@
             <input type="number" id="retryCount" class="auto-save" value="1" min="0" max="5" title="单张图生成失败后自动重试的次数">
         </div>
 
+        <div class="control-group">
+            <label>超时时间 (Timeout)</label>
+            <input type="number" id="timeout" class="auto-save" value="120" min="10" max="600" step="10" title="API 请求的超时秒数">
+        </div>
+
         <!-- Temperature and Top P -->
         <div class="control-group">
             <label for="temperature">温度 (Temperature): <span id="temperatureValue" class="clickable-value" onclick="editValue('temperature', 2, 0.01)">0.9</span></label>
@@ -134,10 +147,10 @@
         <div class="control-group full-width">
             <label for="jailbreakToggle" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;">
                 <span>
-                    <span style="font-weight:bold; font-size: 0.9em;">🔥 高级模式 (Jailbreak)</span>
-                    <span style="font-size: 0.75em; color: var(--text-muted); margin-left: 8px;">尝试绕过安全限制</span>
+                    <span style="font-weight:bold; font-size: 0.9em;">🔥 系统指令覆盖 (Override)</span>
+                    <span style="font-size: 0.75em; color: var(--text-muted); margin-left: 8px;">尝试覆盖模型系统指令</span>
                 </span>
-                <input type="checkbox" id="jailbreakToggle" class="auto-save" style="transform: scale(1.4);" onchange="toggleJailbreakSection()">
+                <input type="checkbox" id="jailbreakToggle" class="auto-save" style="transform: scale(1.4);" onchange="toggleSystemOverrideSection()">
             </label>
             <div id="jailbreakSection">
                 <div class="control-group" style="margin-bottom:0;">
@@ -180,22 +193,23 @@
             <label>
                 画面描述 (Prompt)
                 <button class="btn-add-preset" onclick="saveCurrentPrompt()" title="将当前输入框内容保存为预设">
-                    + 存为预设
+                    + 保存为预设
                 </button>
             </label>
 
             <div id="presetContainer" class="preset-area"></div>
 
-            <textarea id="prompt" placeholder="描述你想要生成的画面... 模型会思考并作画。"></textarea>
+            <textarea id="prompt" placeholder="描述你想要生成的画面..."></textarea>
         </div>
 
-        <div class="control-group full-width">
-            <div class="btn-group">
-                <button id="generateBtn" class="btn-primary" onclick="startGeneration()">✨ 开始生成 ✨</button>
-                <div id="status" class="status-text" style="flex:2; text-align: left; margin-top:0;">准备就绪。</div>
-            </div>
-            <div id="errorArea"></div>
-        </div>
+<div class="control-group full-width">
+    <div class="btn-group">
+        <button id="generateBtn" class="btn-primary" onclick="startGeneration()">✨ 开始生成 ✨</button>
+        <button id="stopBtn" class="btn-danger" onclick="stopGeneration()" style="display: none;">🛑 停止生成</button>
+        <div id="status" class="status-text" style="flex:2; text-align: left; margin-top:0;">准备就绪，等待指令。</div>
+    </div>
+    <div id="errorArea"></div>
+</div>
 
         <!-- Advanced Settings -->
         <div class="full-width" style="margin-top: 20px;">
@@ -225,6 +239,7 @@
                             <div>
                                 <label for="safeHarassment">骚扰</label>
                                 <select id="safeHarassment" class="auto-save">
+                                    <option value="OFF">OFF (完全关闭)</option>
                                     <option value="BLOCK_NONE">BLOCK_NONE</option>
                                     <option value="BLOCK_ONLY_HIGH">BLOCK_ONLY_HIGH</option>
                                     <option value="BLOCK_MEDIUM_AND_ABOVE">BLOCK_MEDIUM</option>
@@ -234,6 +249,7 @@
                             <div>
                                 <label for="safeHate">仇恨</label>
                                 <select id="safeHate" class="auto-save">
+                                    <option value="OFF">OFF (完全关闭)</option>
                                     <option value="BLOCK_NONE">BLOCK_NONE</option>
                                     <option value="BLOCK_ONLY_HIGH">BLOCK_ONLY_HIGH</option>
                                     <option value="BLOCK_MEDIUM_AND_ABOVE">BLOCK_MEDIUM</option>
@@ -243,6 +259,7 @@
                             <div>
                                 <label for="safeSex">色情</label>
                                 <select id="safeSex" class="auto-save">
+                                    <option value="OFF">OFF (完全关闭)</option>
                                     <option value="BLOCK_NONE">BLOCK_NONE</option>
                                     <option value="BLOCK_ONLY_HIGH">BLOCK_ONLY_HIGH</option>
                                     <option value="BLOCK_MEDIUM_AND_ABOVE">BLOCK_MEDIUM</option>
@@ -252,6 +269,7 @@
                             <div>
                                 <label for="safeDanger">危险</label>
                                 <select id="safeDanger" class="auto-save">
+                                    <option value="OFF">OFF (完全关闭)</option>
                                     <option value="BLOCK_NONE">BLOCK_NONE</option>
                                     <option value="BLOCK_ONLY_HIGH">BLOCK_ONLY_HIGH</option>
                                     <option value="BLOCK_MEDIUM_AND_ABOVE">BLOCK_MEDIUM</option>
@@ -261,6 +279,7 @@
                             <div>
                                 <label for="safeCivic">公民正义</label>
                                 <select id="safeCivic" class="auto-save">
+                                    <option value="OFF">OFF (完全关闭)</option>
                                     <option value="BLOCK_NONE">BLOCK_NONE</option>
                                     <option value="BLOCK_ONLY_HIGH">BLOCK_ONLY_HIGH</option>
                                     <option value="BLOCK_MEDIUM_AND_ABOVE">BLOCK_MEDIUM</option>
@@ -275,7 +294,7 @@
     </div>
 
     <div class="gallery-header">
-        <div class="gallery-title">历史记录 (已自动归档)</div>
+        <div class="gallery-title">历史作品回廊 (已自动归档)</div>
         <div class="selection-controls" style="display: flex; gap: 10px;">
             <button id="selectionBtn" class="btn-secondary" onclick="toggleSelectionMode()">多选</button>
             <button id="downloadBtn" class="btn-primary" style="display: none;" onclick="downloadSelected()">下载选中 (<span id="selectedCount">0</span>)</button>
