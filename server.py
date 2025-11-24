@@ -4,6 +4,7 @@ import base64
 import time
 import sqlite3
 import zipfile
+import re
 from typing import List, Optional, Dict, Any
 from io import BytesIO
 from datetime import datetime
@@ -11,7 +12,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException, Body, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import httpx
 from PIL import Image
@@ -26,7 +27,7 @@ THUMB_DIR = os.path.join(DATA_DIR, "thumbnails")
 os.makedirs(IMAGES_DIR, exist_ok=True)
 os.makedirs(THUMB_DIR, exist_ok=True)
 
-app = FastAPI(title="GreySoul Art Workshop Backend")
+app = FastAPI(title="Image Generation Server Backend")
 
 # 允许跨域
 app.add_middleware(
@@ -128,8 +129,10 @@ class GenerateRequest(BaseModel):
 
     aspectRatio: Optional[str] = None
     imageSize: str = "1K"
+    image_format: str = "jpeg"  # 新增：输出图片格式
     batchSize: int = 1
     refImages: List[Dict[str, Any]] = []
+    timeout: Optional[float] = 120.0
 
     # Generation params
     temperature: Optional[float] = None
@@ -146,6 +149,14 @@ class GenerateRequest(BaseModel):
     system_prompt: Optional[str] = None
     forged_response: Optional[str] = None
     system_instruction_method: Optional[str] = "instruction"
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[Dict[str, Any]]
+    max_tokens: Optional[int] = 150
+    temperature: Optional[float] = 0.7
+    stream: bool = False
 
 
 # --- 工具函数：配置读写 ---
@@ -166,11 +177,30 @@ def get_db_connection():
     return conn
 
 
+# --- 工具函数：清洗文本中的 Base64 图片 ---
+def clean_text_content(text: str) -> str:
+    """
+    去除文本中包含的 Markdown Base64 图片，避免数据库膨胀。
+    """
+    if not text:
+        return ""
+    
+    # 1. 去除 OpenAI 生图响应中可能包含的 "**Response:**" 头部
+    # 使用 re.MULTILINE 以正确处理可能的多行情况
+    cleaned = re.sub(r'^\s*\*\*Response:\*\*\s*', '', text, flags=re.MULTILINE)
+
+    # 2. 匹配并去除 markdown 图片语法 (data:...)，避免 base64 存入数据库
+    # 采用非贪婪匹配，防止误删
+    cleaned = re.sub(r'!\[.*?\]\(data:image\/.*?;base64,.*?\)', '', cleaned, flags=re.DOTALL)
+    return cleaned.strip()
+
+
 # --- 工具函数：瘦身 raw_response：删除图片 base64 数据 ---
 def strip_image_data_for_storage(api_response: Any) -> Any:
     """
-    删除 Gemini 返回中的大字段：
+    删除 Gemini / OpenAI 返回中的大字段：
     - inline_data/inlineData 里的 data (图片 base64)
+    - b64_json (OpenAI 图片 base64)
     - thoughtSignature / thought_signature (超长签名)
     保留整体结构和文字，以避免 history.db 被撑爆。
     """
@@ -180,51 +210,54 @@ def strip_image_data_for_storage(api_response: Any) -> Any:
     # 深拷贝，避免修改原始对象
     data = json.loads(json.dumps(api_response))
 
-    # 1. 主要清洗 candidates[*].content.parts[*]
-    for cand in data.get("candidates", []):
-        content = cand.get("content") or {}
-        parts = content.get("parts") or []
-        for part in parts:
-            # 1.1 图片 base64：inline_data / inlineData 下的 data
-            for key in ("inline_data", "inlineData"):
-                if key in part and isinstance(part[key], dict):
-                    inline = part[key]
-                    if "data" in inline:
-                        # 删掉或改为占位字符串
-                        # del inline["data"]
-                        inline["data"] = "[omitted-image-data]"
-
-            # 1.2 超长 thoughtSignature 字段
+    # 1. Gemini format
+    if "candidates" in data:
+        for cand in data.get("candidates", []):
+            content = cand.get("content") or {}
+            parts = content.get("parts") or []
+            for part in parts:
+                for key in ("inline_data", "inlineData"):
+                    if key in part and isinstance(part[key], dict):
+                        inline = part[key]
+                        if "data" in inline:
+                            inline["data"] = "[omitted-image-data]"
+                for sig_key in ("thoughtSignature", "thought_signature"):
+                    if sig_key in part:
+                        part[sig_key] = "[omitted-thought-signature]"
             for sig_key in ("thoughtSignature", "thought_signature"):
-                if sig_key in part:
-                    part[sig_key] = "[omitted-thought-signature]"
-
-        # 1.3 某些版本可能把 thoughtSignature 直接放在 candidate 上
+                if sig_key in cand:
+                    cand[sig_key] = "[omitted-thought-signature]"
         for sig_key in ("thoughtSignature", "thought_signature"):
-            if sig_key in cand:
-                cand[sig_key] = "[omitted-thought-signature]"
+            if sig_key in data:
+                data[sig_key] = "[omitted-thought-signature]"
 
-    # 2. 兜底：如果顶层也有 thoughtSignature（很少见），一起干掉
-    for sig_key in ("thoughtSignature", "thought_signature"):
-        if sig_key in data:
-            data[sig_key] = "[omitted-thought-signature]"
+    # 2. OpenAI DALL-E format
+    elif "data" in data and isinstance(data["data"], list):
+        for item in data["data"]:
+            if "b64_json" in item:
+                item["b64_json"] = "[omitted-image-data]"
 
     return data
 
 
 # --- 工具函数：保存图片：改为高质量 JPEG ---
 def save_image_and_thumb(
-    base64_data: str, db_id: int, img_index: int, category: str = "main"
+    base64_data: str,
+    db_id: int,
+    img_index: int,
+    category: str = "main",
+    image_format: str = "jpeg",
 ):
     """
-    Saves a base64 image to a date-based folder as JPEG and creates a thumbnail.
+    Saves a base64 image to a date-based folder as JPEG/PNG and creates a thumbnail.
     category: 'main', 'ref', 'thought'
+    image_format: 'jpeg' or 'png'
     """
     try:
         img_data = base64.b64decode(base64_data)
         img = Image.open(BytesIO(img_data))
 
-        if img.mode not in ("RGB", "L"):
+        if img.mode not in ("RGB", "L", "RGBA"):
             img = img.convert("RGB")
 
         now = datetime.now()
@@ -238,23 +271,43 @@ def save_image_and_thumb(
         timestamp = int(time.time())
         prefix = f"{category}_" if category != "main" else ""
         base_filename = f"{timestamp}_{db_id}_{prefix}{img_index}"
-        ext = "jpg"
+
+        fmt = (image_format or "jpeg").lower()
+        if fmt not in ("jpeg", "jpg", "png"):
+            fmt = "jpeg"
+
+        if fmt == "png":
+            ext = "png"
+            pil_format = "PNG"
+            mime = "image/png"
+        else:
+            ext = "jpg"
+            pil_format = "JPEG"
+            mime = "image/jpeg"
 
         filename = f"{base_filename}.{ext}"
         full_path = os.path.join(full_dir_path, filename)
         thumb_path = os.path.join(thumb_dir_path, filename)
 
-        img.save(full_path, format="JPEG", quality=95, optimize=True)
+        # 主图
+        if pil_format == "JPEG":
+            img.save(full_path, format=pil_format, quality=95, optimize=True)
+        else:
+            img.save(full_path, format=pil_format, optimize=True)
 
+        # 缩略图
         thumb_img = img.copy()
         thumb_img.thumbnail((400, 400))
-        thumb_img.save(thumb_path, format="JPEG", quality=85, optimize=True)
+        if pil_format == "JPEG":
+            thumb_img.save(thumb_path, format=pil_format, quality=85, optimize=True)
+        else:
+            thumb_img.save(thumb_path, format=pil_format, optimize=True)
 
         return {
             "filename": filename,
             "path": f"/images/full/{date_folder}/{filename}",
             "thumb": f"/images/thumb/{date_folder}/{filename}",
-            "mime": "image/jpeg",
+            "mime": mime,
         }
     except Exception as e:
         print(f"Error saving image: {e}")
@@ -287,14 +340,444 @@ def save_config(config: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=500, detail=f"Failed to save config: {e}")
 
 
+# --- 工具函数：获取 OpenAI 尺寸 ---
+def get_openai_size(aspect_ratio: Optional[str]) -> str:
+    """ Maps aspect ratio to DALL-E 3 supported sizes. """
+    if aspect_ratio == "16:9":
+        return "1792x1024"
+    if aspect_ratio == "9:16":
+        return "1024x1792"
+    return "1024x1024"  # Default to 1:1 square
+
+
+async def generate_openai_chat(req: GenerateRequest):
+    """ Handles image generation via OpenAI Chat Completions API (upstream). """
+    # Support standard /v1/chat/completions path
+    base_url = req.api_base_url.rstrip('/')
+    if base_url.endswith('/v1'):
+        api_url = f"{base_url}/chat/completions"
+    else:
+        api_url = f"{base_url}/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {req.apiKey}",
+        "Content-Type": "application/json",
+    }
+
+    # Construct content list for Vision models
+    messages: List[Dict[str, Any]]
+    if req.refImages:
+        content_list = [{"type": "text", "text": req.prompt}]
+        for ref_img in req.refImages:
+            img_url = f"data:{ref_img['mime_type']};base64,{ref_img['data']}"
+            content_list.append({
+                "type": "image_url",
+                "image_url": {"url": img_url},
+            })
+        messages = [{"role": "user", "content": content_list}]
+    else:
+        messages = [{"role": "user", "content": req.prompt}]
+
+    # Construct payload
+    payload = {
+        "model": req.model,
+        "messages": messages,
+        "stream": False,
+    }
+    # Add optional params if needed, e.g. max_tokens?
+    # Usually not needed for image generation triggers but good to have defaults.
+
+    async with httpx.AsyncClient(timeout=req.timeout) as client:
+        try:
+            response = await client.post(api_url, json=payload, headers=headers)
+            response_data = response.json()
+
+            if response.status_code != 200:
+                error_msg = response_data.get("error", {}).get("message", str(response_data))
+                print(f"OpenAI Chat API Error ({response.status_code}): {error_msg}")
+                record_failure(req, error_msg)
+                raise HTTPException(status_code=response.status_code, detail=error_msg)
+
+            choices = response_data.get("choices", [])
+            if not choices:
+                record_failure(req, "No choices returned from OpenAI Chat API")
+                raise HTTPException(status_code=500, detail="OpenAI Chat API returned no choices.")
+
+            content = choices[0].get("message", {}).get("content", "")
+            if not content:
+                record_failure(req, "Empty content from OpenAI Chat API")
+                raise HTTPException(status_code=500, detail="OpenAI Chat API returned empty content.")
+
+            # Extract image URL from markdown or text
+            # Look for ![...](url) or just http(s)://...
+            # Regex for markdown image: !\[.*?\]\((.*?)\)
+            img_urls = re.findall(r'!\[.*?\]\((.*?)\)', content)
+            
+            # Fallback: Look for any http(s) url in the text if no markdown image found?
+            # Some models might just return the url.
+            if not img_urls:
+                # Simple regex for http urls
+                urls = re.findall(r'https?://[^\s\)]+', content)
+                # Filter for likely image extensions if possible, or just take the first one?
+                # Let's take the first one that looks like an image or just the first one.
+                if urls:
+                    img_urls = [urls[0]]
+
+            if not img_urls:
+                # Check for b64_json in non-standard place? Unlikely for chat.
+                # Log the content for debugging
+                print(f"No image URL found in content: {content[:200]}...")
+                record_failure(req, "No image URL found in response")
+                raise HTTPException(status_code=500, detail="Could not extract image URL from response.")
+
+            image_url = img_urls[0]
+            
+            # Check if it's a data URI or a remote URL
+            if image_url.startswith("data:image/"):
+                # Handle Data URI
+                try:
+                    header, encoded = image_url.split(",", 1)
+                    img_data = base64.b64decode(encoded)
+                    b64_data = base64.b64encode(img_data).decode("utf-8")
+                    print("Extracted image from Data URI.")
+                except Exception as e:
+                    record_failure(req, f"Failed to decode Data URI: {e}")
+                    raise HTTPException(status_code=500, detail=f"Failed to decode image data URI: {e}")
+            else:
+                # Download the image
+                print(f"Downloading image from: {image_url}")
+                try:
+                    img_resp = await client.get(image_url)
+                    if img_resp.status_code != 200:
+                        record_failure(req, f"Failed to download image: {img_resp.status_code}")
+                        raise HTTPException(status_code=500, detail=f"Failed to download image from URL: {image_url}")
+                    img_data = img_resp.content
+                    b64_data = base64.b64encode(img_data).decode("utf-8")
+                except Exception as e:
+                     record_failure(req, f"Download error: {e}")
+                     raise HTTPException(status_code=500, detail=f"Error downloading image: {e}")
+            
+            # Cost estimation (Text + Image? Hard to know upstream cost)
+            # Assume standard rate or 0 for now?
+            total_cost = 0.0
+
+            # ---- Save to DB ----
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            timestamp = time.time()
+            storage_response = strip_image_data_for_storage(response_data)
+            
+            # Clean content (remove base64 images)
+            cleaned_content = clean_text_content(content)
+
+            cursor.execute(
+                """
+                INSERT INTO generations
+                (timestamp, prompt, model, images_json, ref_images_json, thought_images_json,
+                 thought_text, raw_response, status, input_tokens, image_size, cost)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    timestamp, req.prompt, req.model, "[]", "[]", "[]", cleaned_content,
+                    json.dumps(storage_response, ensure_ascii=False),
+                    "success", 0, req.imageSize, total_cost,
+                ),
+            )
+            new_id = cursor.lastrowid
+
+            # Save images
+            saved_images = []
+            # We only have 1 image typically from this flow
+            img_info = save_image_and_thumb(
+                b64_data, new_id, 0, category="main", image_format=req.image_format
+            )
+            if img_info:
+                saved_images.append(img_info)
+
+            # Update DB with image paths
+            cursor.execute(
+                "UPDATE generations SET images_json = ? WHERE id = ?",
+                (json.dumps(saved_images), new_id),
+            )
+            conn.commit()
+            conn.close()
+
+            return {
+                "success": True,
+                "data": {
+                    "id": new_id,
+                    "timestamp": timestamp * 1000,
+                    "prompt": req.prompt,
+                    "text": content,
+                    "images": saved_images,
+                    "b64_images": [b64_data],
+                    "refImages": [],
+                    "thoughtImages": [],
+                    "model": req.model,
+                    "cost": total_cost,
+                },
+            }
+
+        except httpx.RequestError as exc:
+            detailed_error = repr(exc)
+            error_msg = f"Request to OpenAI Chat API failed: {detailed_error}"
+            print(f"--- HTTPX REQUEST ERROR --- \nURL: {exc.request.url}\nError: {detailed_error}\n--------------------------")
+            record_failure(req, error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            import traceback
+            error_msg = f"An unknown internal server error occurred: {str(exc)}"
+            print("--- UNHANDLED SERVER ERROR ---")
+            traceback.print_exc()
+            print("-----------------------------")
+            record_failure(req, error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+
+
+async def generate_openai(req: GenerateRequest):
+    """ Handles image generation via OpenAI DALL-E API. """
+    api_url = f"{req.api_base_url.rstrip('/')}/v1/images/generations"
+    headers = {
+        "Authorization": f"Bearer {req.apiKey}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": req.model,
+        "prompt": req.prompt,
+        "n": req.batchSize,
+        "size": get_openai_size(req.aspectRatio),
+        "response_format": "b64_json",
+    }
+
+    async with httpx.AsyncClient(timeout=req.timeout) as client:
+        try:
+            response = await client.post(api_url, json=payload, headers=headers)
+            response_data = response.json()
+
+            if response.status_code != 200:
+                error_msg = response_data.get("error", {}).get("message", str(response_data))
+                print(f"OpenAI API Error ({response.status_code}): {error_msg}")
+                record_failure(req, error_msg)
+                raise HTTPException(status_code=response.status_code, detail=error_msg)
+
+            # Cost calculation (DALL-E 3 standard quality)
+            size = payload["size"]
+            num_images = len(response_data.get("data", []))
+            if size == "1024x1024":
+                total_cost = 0.040 * num_images
+            else:
+                total_cost = 0.080 * num_images
+
+            result_images_b64 = [item['b64_json'] for item in response_data.get("data", []) if 'b64_json' in item]
+            if not result_images_b64:
+                record_failure(req, "No images returned from OpenAI", total_cost)
+                raise HTTPException(status_code=500, detail="OpenAI API did not return any images.")
+
+            # ---- Save to DB ----
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            timestamp = time.time()
+            storage_response = strip_image_data_for_storage(response_data)
+
+            cursor.execute(
+                """
+                INSERT INTO generations
+                (timestamp, prompt, model, images_json, ref_images_json, thought_images_json,
+                 thought_text, raw_response, status, input_tokens, image_size, cost)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    timestamp, req.prompt, req.model, "[]", "[]", "[]", "",
+                    json.dumps(storage_response, ensure_ascii=False),
+                    "success", 0, size, total_cost,
+                ),
+            )
+            new_id = cursor.lastrowid
+
+            # Save images
+            saved_images = []
+            for idx, b64 in enumerate(result_images_b64):
+                img_info = save_image_and_thumb(
+                    b64, new_id, idx, category="main", image_format=req.image_format
+                )
+                if img_info:
+                    saved_images.append(img_info)
+
+            # Update DB with image paths
+            cursor.execute(
+                "UPDATE generations SET images_json = ? WHERE id = ?",
+                (json.dumps(saved_images), new_id),
+            )
+            conn.commit()
+            conn.close()
+
+            return {
+                "success": True,
+                "data": {
+                    "id": new_id,
+                    "timestamp": timestamp * 1000,
+                    "prompt": req.prompt,
+                    "text": "",
+                    "images": saved_images,
+                    "b64_images": result_images_b64,
+                    "refImages": [],
+                    "thoughtImages": [],
+                    "model": req.model,
+                    "cost": total_cost,
+                },
+            }
+        except httpx.RequestError as exc:
+            detailed_error = repr(exc)
+            error_msg = f"Request to OpenAI API failed: {detailed_error}"
+            print(f"--- HTTPX REQUEST ERROR --- \nURL: {exc.request.url}\nError: {detailed_error}\n--------------------------")
+            record_failure(req, error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            import traceback
+            error_msg = f"An unknown internal server error occurred: {str(exc)}"
+            print("--- UNHANDLED SERVER ERROR ---")
+            traceback.print_exc()
+            print("-----------------------------")
+            record_failure(req, error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(req: ChatCompletionRequest):
+    # Extract prompt and images from the last user message
+    user_prompt = ""
+    ref_images = []
+
+    if req.messages and req.messages[-1].get("role") == "user":
+        content = req.messages[-1].get("content", "")
+        if isinstance(content, list): # Handle content arrays
+            for item in content:
+                if item.get("type") == "text":
+                    user_prompt += item.get("text", "") + "\n"
+                elif item.get("type") == "image_url":
+                    image_url_obj = item.get("image_url", {})
+                    url = image_url_obj.get("url", "")
+                    
+                    if url.startswith("data:"):
+                        try:
+                            # Format: data:image/png;base64,......
+                            header, encoded = url.split(",", 1)
+                            mime_type = header.split(":")[1].split(";")[0]
+                            ref_images.append({
+                                "mime_type": mime_type,
+                                "data": encoded
+                            })
+                        except Exception as e:
+                            print(f"Error parsing data URI in chat_completions: {e}")
+                    elif url.startswith("http"):
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                resp = await client.get(url, timeout=30.0)
+                                if resp.status_code == 200:
+                                    mime_type = resp.headers.get("content-type", "image/jpeg")
+                                    encoded = base64.b64encode(resp.content).decode("utf-8")
+                                    ref_images.append({
+                                        "mime_type": mime_type,
+                                        "data": encoded
+                                    })
+                        except Exception as e:
+                            print(f"Error downloading image in chat_completions: {e}")
+
+        elif isinstance(content, str):
+            user_prompt = content
+    
+    if not user_prompt and not ref_images:
+        raise HTTPException(status_code=400, detail="No valid user prompt or image found in messages.")
+
+    # Use default settings from config for API key and base URL
+    config = read_config_file()
+    api_key = config.get("api_key", "")
+    api_base_url = config.get("api_base_url", "https://api.openai.com")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key not configured in config.json.")
+
+    # Determine API format based on config or model name
+    # Priority: Config > Model Inference
+    api_format = config.get("api_format", "gemini") # Default to gemini as this is primarily a Gemini backend
+
+    # Fallback inference if config is not explicit or we want to override based on known models
+    if req.model.startswith("gemini-"):
+        # If it's a Gemini model, we almost certainly want the native Gemini handler
+        # UNLESS the user explicitly set api_format to 'openai' in config (meaning they are using a proxy)
+        if api_format != "openai":
+            api_format = "gemini"
+    elif req.model.startswith("gpt-") or req.model.startswith("dall-e"):
+        api_format = "openai" # or openai_chat
+
+    # Create a GenerateRequest object to pass to the existing logic
+    generate_req = GenerateRequest(
+        apiKey=api_key,
+        model=req.model,
+        prompt=user_prompt,
+        api_format=api_format,
+        api_base_url=api_base_url,
+        batchSize=1,
+        imageSize="1024x1024",
+        refImages=ref_images,
+    )
+
+    # Dispatch based on format
+    if api_format == "openai_chat":
+        result = await generate_openai_chat(generate_req)
+    else:
+        result = await generate_openai(generate_req)
+
+    # Format the response to be compatible with OpenAI's ChatCompletion object
+    response_content = []
+    if result["success"] and result["data"].get("b64_images"):
+        b64_data = result["data"]["b64_images"][0]
+        # The client might expect a specific image format, let's assume jpeg as default
+        mime_type = "image/jpeg"
+        response_content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{mime_type};base64,{b64_data}"
+            }
+        })
+    else:
+        # Fallback to a text message if image generation failed
+        response_content = "Sorry, I couldn't generate the image."
+
+
+    return {
+        "id": f"chatcmpl-{int(time.time())}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": req.model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": response_content,
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,  # DALL-E API doesn't provide token usage
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
+    }
+
+
 # --- /api/generate ---
 @app.post("/api/generate")
 async def generate(req: GenerateRequest):
-    if req.api_format == "openai":
-        raise HTTPException(
-            status_code=501,
-            detail="OpenAI format not yet implemented in the backend.",
-        )
+    # 强制所有 OpenAI 格式请求都走 Chat Completion 接口
+    if req.api_format == "openai" or req.api_format == "openai_chat":
+        return await generate_openai_chat(req)
 
     # Gemini API URL
     api_url = (
@@ -321,20 +804,25 @@ async def generate(req: GenerateRequest):
         }
 
     # 2. contents（对话）
-    user_parts: List[Dict[str, Any]] = [{"text": req.prompt}]
+    # 2. contents（对话）- Gemini API 要求文本和图片作为独立的 part
+    user_parts: List[Dict[str, Any]] = []
+    
+    # 首先添加文本部分
+    if req.prompt:
+        user_parts.append({"text": req.prompt})
+
+    # 然后为每个参考图添加一个独立的 part
     for ref_img in req.refImages:
-        user_parts.append(
-            {
-                "inline_data": {
-                    "mime_type": ref_img["mime_type"],
-                    "data": ref_img["data"],
-                }
+        user_parts.append({
+            "inline_data": {
+                "mime_type": ref_img["mime_type"],
+                "data": ref_img["data"],
             }
-        )
+        })
 
     contents: List[Dict[str, Any]] = []
     if req.jailbreak_enabled and req.forged_response:
-        # 破限模式：伪造对话历史
+        # 绕过限制模式：伪造对话历史
         contents.append({"role": "user", "parts": user_parts})
         contents.append(
             {
@@ -386,7 +874,7 @@ async def generate(req: GenerateRequest):
                 "parts": [{"text": req.system_prompt}]
             }
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=req.timeout) as client:
         try:
             response = await client.post(api_url, json=payload)
             response_data = response.json()
@@ -437,20 +925,23 @@ async def generate(req: GenerateRequest):
                 print(json.dumps(candidate, ensure_ascii=False, indent=2))
                 raise HTTPException(status_code=500, detail="模型返回了空内容")
 
+            result_text = ""
             result_images_b64: List[str] = []
             thought_images_b64: List[str] = []
-            result_text = ""
 
             for part in parts_res:
-                is_thought_part = "thought" in part
-                prefix = "[思维过程] " if is_thought_part else ""
-                
+                # Gemini 思维模式：thought 是 bool
+                is_thought_part = bool(part.get("thought"))
+
                 text_content = part.get("text")
-                if text_content is not None:
-                    result_text += prefix + text_content + "\n"
-                
+                if text_content:
+                    if is_thought_part:
+                        result_text += "[思维过程] " + text_content + "\n"
+                    else:
+                        result_text += text_content + "\n"
+
                 inline_data = part.get("inline_data") or part.get("inlineData")
-                if inline_data:
+                if inline_data and "data" in inline_data:
                     if is_thought_part:
                         thought_images_b64.append(inline_data["data"])
                     else:
@@ -464,7 +955,7 @@ async def generate(req: GenerateRequest):
                 raise HTTPException(
                     status_code=500,
                     detail=(
-                        "解析失败，模型未返回已知格式的 Text 或 Image !!\n"
+                        "解析失败，模型未返回已知格式的 Text 或 Image。\n"
                         f"原始数据: {raw_dump}"
                     ),
                 )
@@ -487,6 +978,9 @@ async def generate(req: GenerateRequest):
             # 先瘦身 raw_response 再存
             storage_response = strip_image_data_for_storage(response_data)
 
+            # 清洗结果文本 (去掉 base64 图片)
+            cleaned_result_text = clean_text_content(result_text)
+
             cursor.execute(
                 """
                 INSERT INTO generations
@@ -498,10 +992,10 @@ async def generate(req: GenerateRequest):
                     timestamp,
                     req.prompt,
                     req.model,
-                    "[]", # Will be updated later
-                    "[]", # Will be updated later
-                    "[]", # Will be updated later
-                    result_text,
+                    "[]",  # Will be updated later
+                    "[]",  # Will be updated later
+                    "[]",  # Will be updated later
+                    cleaned_result_text,
                     json.dumps(storage_response, ensure_ascii=False),
                     "success",
                     prompt_token_count,
@@ -511,10 +1005,16 @@ async def generate(req: GenerateRequest):
             )
             new_id = cursor.lastrowid
 
-            # 保存生成图片
+            # 保存生成图片（按前端指定格式）
             saved_images = []
             for idx, b64 in enumerate(result_images_b64):
-                img_info = save_image_and_thumb(b64, new_id, idx, category="main")
+                img_info = save_image_and_thumb(
+                    b64,
+                    new_id,
+                    idx,
+                    category="main",
+                    image_format=req.image_format,
+                )
                 if img_info:
                     saved_images.append(img_info)
 
@@ -560,20 +1060,28 @@ async def generate(req: GenerateRequest):
             }
 
         except httpx.RequestError as exc:
-            print(f"HTTP Request Error: {exc}")
-            record_failure(req, f"Request failed: {exc}")
-            raise HTTPException(status_code=500, detail=f"Request failed: {exc}")
+            # 使用 repr(exc) 获取更详细的错误表示
+            detailed_error = repr(exc)
+            error_msg = f"请求 Gemini API 时出错: {detailed_error}"
+            print("--- HTTPX REQUEST ERROR ---")
+            print(f"URL: {exc.request.url}")
+            print(f"Error Type: {type(exc)}")
+            print(f"Error Details (repr): {detailed_error}")
+            print("--------------------------")
+            record_failure(req, error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
         except HTTPException:
             # record_failure 已在上面必要分支调用
             raise
         except Exception as exc:
             import traceback
 
+            error_msg = f"服务器内部出现未知错误: {str(exc)}"
+            print("--- UNHANDLED SERVER ERROR ---")
             traceback.print_exc()
-            record_failure(req, f"Server Internal Error: {str(exc)}")
-            raise HTTPException(
-                status_code=500, detail=f"Server Internal Error: {str(exc)}"
-            )
+            print("-----------------------------")
+            record_failure(req, error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
 
 
 def record_failure(req: GenerateRequest, error_msg: str, input_cost: float = 0.0):
